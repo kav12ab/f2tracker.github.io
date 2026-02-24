@@ -41,6 +41,7 @@ let carsByPostWip = {}; // Map for Post WIP zones
 let stats = { today: {}, week: {}, historyDaily: {}, historyWeekly: {} };
 let currentUserRole = null; 
 let managerViewMode = 'day';
+let selectedModelsFilter = null;
 let appConfig = { 
     areas: [...DEFAULT_AREAS], 
     routing: {...DEFAULT_ROUTING}, 
@@ -795,6 +796,19 @@ window.setManagerView = (mode) => {
     renderThroughputMetrics();
 };
 
+// NEW: Toggle filter state and force re-render
+window.toggleThroughputModelFilter = (model) => {
+    if (selectedModelsFilter.includes(model)) {
+        selectedModelsFilter = selectedModelsFilter.filter(m => m !== model);
+    } else {
+        selectedModelsFilter.push(model);
+    }
+    // Prevent deselecting everything (force at least one model to be viewed)
+    if (selectedModelsFilter.length === 0) selectedModelsFilter = [model];
+    
+    renderThroughputMetrics();
+};
+
 const renderThroughputMetrics = () => {
     if (currentUserRole === 'Manager' || currentUserRole === 'Admin') {
         managerToggleContainer.classList.remove('hidden');
@@ -804,15 +818,115 @@ const renderThroughputMetrics = () => {
         managerThroughputDisplay.classList.remove('hidden');
         metricsTitle.textContent = "Facility Throughput";
 
+        // --- 1. RENDER MODEL FILTERS ---
+        const allModels = [...(appConfig.models || []), 'Unknown'];
+        if (!selectedModelsFilter) selectedModelsFilter = [...allModels]; // Default select all
+
+        const filterContainer = document.getElementById('throughput-model-filters');
+        if (filterContainer) {
+            filterContainer.innerHTML = allModels.map(m => `
+                <label class="inline-flex items-center cursor-pointer bg-white px-3 py-1.5 rounded border ${selectedModelsFilter.includes(m) ? 'border-indigo-500 ring-1 ring-indigo-500 bg-indigo-50/30' : 'border-gray-200 hover:bg-gray-50'} transition">
+                    <input type="checkbox" class="hidden" onchange="toggleThroughputModelFilter('${m}')" ${selectedModelsFilter.includes(m) ? 'checked' : ''}>
+                    <div class="w-4 h-4 rounded border ${selectedModelsFilter.includes(m) ? 'bg-indigo-600 border-indigo-600 flex justify-center items-center' : 'bg-white border-gray-300'} mr-2">
+                        ${selectedModelsFilter.includes(m) ? '<svg class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
+                    </div>
+                    <span class="text-sm font-bold text-gray-700 truncate max-w-[120px]">${m}</span>
+                </label>
+            `).join('');
+        }
+
+        // --- 2. DYNAMICALLY RECALCULATE METRICS WITH FILTER ---
+        const { today, weekStart } = getDates();
+        let filteredToday = {};
+        let filteredWeek = {};
+        let filteredHistDaily = {};
+        let filteredHistWeekly = {};
+        let completedTotal = 0;
+        let completedByModel = {};
+
+        allCars.forEach(car => {
+            const carModel = car.model || 'Unknown';
+            if (!selectedModelsFilter.includes(carModel)) return; // Skip if model is unselected
+
+            // Throughput History Tracking
+            if (car.history) {
+                car.history.forEach(h => {
+                    if (h.status === 'Finished') {
+                        const date = h.timestamp.toDate ? h.timestamp.toDate() : new Date(h.timestamp);
+                        const dateStr = date.toISOString().split('T')[0];
+                        const d = new Date(date);
+                        const dayNum = d.getDay();
+                        const diff = d.getDate() - dayNum;
+                        const ws = new Date(d.setDate(diff));
+                        const weekKey = `${ws.getFullYear()}-W${Math.ceil((((ws - new Date(ws.getFullYear(),0,1))/86400000)+1)/7)}`;
+                        const area = h.area;
+
+                        if (!filteredHistDaily[dateStr]) filteredHistDaily[dateStr] = {};
+                        filteredHistDaily[dateStr][area] = (filteredHistDaily[dateStr][area] || 0) + 1;
+                        
+                        if (!filteredHistWeekly[weekKey]) filteredHistWeekly[weekKey] = {};
+                        filteredHistWeekly[weekKey][area] = (filteredHistWeekly[weekKey][area] || 0) + 1;
+                        
+                        if (dateStr === today) filteredToday[area] = (filteredToday[area] || 0) + 1;
+                        if (date >= weekStart) filteredWeek[area] = (filteredWeek[area] || 0) + 1;
+                    }
+                });
+            }
+
+            // System Completed (Fully Finished off the dashboard) Tracking
+            if (car.status === 'Finished') {
+                const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
+                const finishDateStr = finishDate.toISOString().split('T')[0];
+                
+                let isCompletedInPeriod = false;
+                if (managerViewMode === 'day' && finishDateStr === today) isCompletedInPeriod = true;
+                if (managerViewMode === 'week' && finishDate >= weekStart) isCompletedInPeriod = true;
+
+                if (isCompletedInPeriod) {
+                    completedTotal++;
+                    completedByModel[carModel] = (completedByModel[carModel] || 0) + 1;
+                }
+            }
+        });
+
+        // --- 3. RENDER LIVE TODAY THROUGHPUT ---
         throughputMetricsGrid.innerHTML = '';
+        const currentDataPool = managerViewMode === 'day' ? filteredToday : filteredWeek;
         appConfig.areas.forEach(area => {
-            const count = stats.today[area] || 0;
+            const count = currentDataPool[area] || 0;
             const card = document.createElement('div');
             card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center';
             card.innerHTML = `<p class="text-[10px] font-bold text-gray-400 uppercase truncate" title="${area}">${area}</p><p class="text-2xl font-bold text-indigo-600">${count}</p>`;
             throughputMetricsGrid.appendChild(card);
         });
 
+        // --- 4. RENDER COMPLETED VEHICLES SECTION ---
+        const completedTitlePeriod = document.getElementById('completed-title-period');
+        if (completedTitlePeriod) {
+            completedTitlePeriod.textContent = managerViewMode === 'day' ? 'Completed Vehicles (Today)' : 'Completed Vehicles (This Week)';
+        }
+
+        const completedMetricsGrid = document.getElementById('completed-metrics-grid');
+        if (completedMetricsGrid) {
+            completedMetricsGrid.innerHTML = '';
+            
+            // Total Box
+            const totalCard = document.createElement('div');
+            totalCard.className = 'bg-green-50 p-3 rounded-lg border border-green-200 text-center shadow-sm';
+            totalCard.innerHTML = `<p class="text-[10px] font-bold text-green-600 uppercase truncate">Total Finished</p><p class="text-2xl font-bold text-green-700">${completedTotal}</p>`;
+            completedMetricsGrid.appendChild(totalCard);
+
+            // Print Individual Models (Only for actively selected models in the filter)
+            selectedModelsFilter.forEach(m => {
+                const count = completedByModel[m] || 0;
+                const card = document.createElement('div');
+                card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center shadow-sm';
+                card.innerHTML = `<p class="text-[10px] font-bold text-gray-500 uppercase truncate" title="${m}">${m}</p><p class="text-2xl font-bold text-gray-700">${count}</p>`;
+                completedMetricsGrid.appendChild(card);
+            });
+        }
+
+        // --- 5. RENDER HISTORY TABLE ---
         historyTableTitle.textContent = managerViewMode === 'day' ? 'Daily History (Last 14 Days)' : 'Weekly History';
         historyTableHeader.innerHTML = '<th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider sticky left-0 bg-gray-50 z-10">Period</th>';
         appConfig.areas.forEach(area => {
@@ -823,75 +937,29 @@ const renderThroughputMetrics = () => {
         });
 
         historyTableBody.innerHTML = '';
-        const dataPool = managerViewMode === 'day' ? stats.historyDaily : stats.historyWeekly;
-        const sortedKeys = Object.keys(dataPool).sort().reverse();
+        const historyPool = managerViewMode === 'day' ? filteredHistDaily : filteredHistWeekly;
+        const sortedKeys = Object.keys(historyPool).sort().reverse();
         const limit = managerViewMode === 'day' ? 14 : 8;
         
         sortedKeys.slice(0, limit).forEach(key => {
-                const rowData = dataPool[key];
-                const tr = document.createElement('tr');
-                const tdLabel = document.createElement('td');
-                tdLabel.className = "px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 bg-white border-r text-center";
-                tdLabel.textContent = managerViewMode === 'day' ? formatDateReadable(key) : `Week ${key.split('W')[1]}`;
-                tr.appendChild(tdLabel);
-                appConfig.areas.forEach(area => {
-                    const td = document.createElement('td');
-                    td.className = "px-2 py-2 whitespace-nowrap text-sm text-gray-500 text-center";
-                    const val = rowData[area] || 0;
-                    td.textContent = val;
-                    if(val > 0) td.classList.add('text-indigo-600', 'font-semibold', 'bg-indigo-50');
-                    tr.appendChild(td);
-                });
-                historyTableBody.appendChild(tr);
+            const rowData = historyPool[key];
+            const tr = document.createElement('tr');
+            const tdLabel = document.createElement('td');
+            tdLabel.className = "px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 bg-white border-r text-center";
+            tdLabel.textContent = managerViewMode === 'day' ? formatDateReadable(key) : `Week ${key.split('W')[1]}`;
+            tr.appendChild(tdLabel);
+            appConfig.areas.forEach(area => {
+                const td = document.createElement('td');
+                td.className = "px-2 py-2 whitespace-nowrap text-sm text-gray-500 text-center";
+                const val = rowData[area] || 0;
+                td.textContent = val;
+                if(val > 0) td.classList.add('text-indigo-600', 'font-semibold', 'bg-indigo-50');
+                tr.appendChild(td);
             });
+            historyTableBody.appendChild(tr);
+        });
 
-            // --- NEW: Render Completed Vehicles Breakdown ---
-            const completedMetricsGrid = document.getElementById('completed-metrics-grid');
-            if (completedMetricsGrid) {
-                completedMetricsGrid.innerHTML = '';
-                
-                // Set up counters
-                const completedCounts = {};
-                (appConfig.models || []).forEach(m => completedCounts[m] = 0);
-                completedCounts['Unknown'] = 0;
-
-                // Calculate totals
-                let totalCompleted = 0;
-                allCars.forEach(car => {
-                    if (car.status === 'Finished') {
-                        totalCompleted++;
-                        const m = car.model || 'Unknown';
-                        if (completedCounts[m] !== undefined) {
-                            completedCounts[m]++;
-                        } else {
-                            completedCounts['Unknown']++;
-                        }
-                    }
-                });
-
-                // Render Total Card (Green)
-                const totalCard = document.createElement('div');
-                totalCard.className = 'bg-green-50 p-3 rounded-lg border border-green-200 text-center';
-                totalCard.innerHTML = `<p class="text-[10px] font-bold text-green-600 uppercase truncate">Total Completed</p><p class="text-2xl font-bold text-green-700">${totalCompleted}</p>`;
-                completedMetricsGrid.appendChild(totalCard);
-
-                // Render Individual Model Cards
-                (appConfig.models || []).forEach(m => {
-                    const card = document.createElement('div');
-                    card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center';
-                    card.innerHTML = `<p class="text-[10px] font-bold text-gray-500 uppercase truncate" title="${m}">${m}</p><p class="text-2xl font-bold text-gray-700">${completedCounts[m]}</p>`;
-                    completedMetricsGrid.appendChild(card);
-                });
-                
-                // Show 'Unknown' models only if there are any
-                if (completedCounts['Unknown'] > 0) {
-                    const card = document.createElement('div');
-                    card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center';
-                    card.innerHTML = `<p class="text-[10px] font-bold text-gray-500 uppercase truncate" title="Unknown">Unknown</p><p class="text-2xl font-bold text-gray-700">${completedCounts['Unknown']}</p>`;
-                    completedMetricsGrid.appendChild(card);
-                }
-            }
-            // ------------------------------------------------
+        // NEW: Populate "Live Inventory Counts" for Manager
 
         // NEW: Populate "Live Inventory Counts" for Manager
         wipSummaryGrid.innerHTML = '';
@@ -2783,5 +2851,6 @@ const init = async () => {
 	
 
 init();
+
 
 
