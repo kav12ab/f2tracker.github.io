@@ -1989,7 +1989,7 @@ window.handleTrackSearch = () => {
              else if (isReturn) { colorClass = 'border-l-4 border-indigo-400 bg-indigo-50'; title = 'RETURNED'; }
              else if (h.status === 'Post-WIP') { colorClass = 'border-l-4 border-purple-400 bg-purple-50'; title = 'POST-WIP'; }
 
-             let extras = '';
+			let extras = '';
              if(h.metrics) {
                  extras = `
                     <div class="mt-2 text-xs bg-white p-2 rounded border border-gray-200">
@@ -2000,6 +2000,27 @@ window.handleTrackSearch = () => {
                         </div>
                         <div class="italic text-gray-500">"${h.metrics.comment}"</div>
                     </div>`;
+             }
+
+             // Determine clear Destination and Origin naming
+             let displayArea = h.area;
+             let originText = '';
+             if (h.to) {
+                 displayArea = h.to;
+                 if (h.status === 'Temp Move') originText = `(sent from ${h.area})`;
+                 else if (h.status === 'Returned') originText = `(returned from ${h.area})`;
+                 else if (h.status === 'Retrieved') originText = `(retrieved from ${h.area})`;
+                 else originText = `(from ${h.area})`;
+             } else if (h.from) {
+                 displayArea = h.area;
+                 originText = `(from ${h.from})`;
+             }
+
+             html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
+                <p class="font-bold text-gray-800">${displayArea} ${originText ? `<span class="text-xs font-normal text-gray-500 italic ml-1">${originText}</span>` : ''} <span class="text-xs font-normal bg-white border px-1 rounded ml-2">${title}</span></p>
+                <p class="text-xs text-gray-500">${new Date(h.timestamp.toDate()).toLocaleString()}</p>
+                ${extras}
+             </div>`;
              }
 
              html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
@@ -2110,18 +2131,32 @@ window.openModal = (vin, history) => {
             icon = 'Post-WIP';
         }
         
-        let metricsHtml = '';
+		let metricsHtml = '';
         if (item.metrics) {
             metricsHtml = `
                 <div class="mt-2 pt-2 border-t border-gray-200/50 text-xs"><div class="flex gap-3 mb-1"><span class="font-semibold">VA: ${item.metrics.va}m</span><span class="font-semibold">NVA: ${item.metrics.nva}m</span></div><div class="italic opacity-75">"${item.metrics.comment}"</div></div>`;
+        }
+
+        // Determine clear Destination and Origin naming
+        let displayArea = item.area;
+        let originText = '';
+        if (item.to) {
+            displayArea = item.to;
+            if (item.status === 'Temp Move') originText = `(sent from ${item.area})`;
+            else if (item.status === 'Returned') originText = `(returned from ${item.area})`;
+            else if (item.status === 'Retrieved') originText = `(retrieved from ${item.area})`;
+            else originText = `(from ${item.area})`;
+        } else if (item.from) {
+            displayArea = item.area;
+            originText = `(from ${item.from})`;
         }
 
         historyContent.innerHTML += `
             <div class="mb-4 last:mb-0 relative pl-4 border-l-2 border-gray-200">
                 <div class="absolute -left-[9px] top-0 w-4 h-4 rounded-full ${iconColor} border-2 border-white"></div>
                 <div class="bg-white p-3 rounded border ${colorClass} text-sm">
-					<div class="flex justify-between font-bold">
-                        <span>${item.area} ${item.to ? `<span class="text-xs font-normal text-gray-400 italic ml-1">&rarr; ${item.to}</span>` : ''}</span>
+                    <div class="flex justify-between font-bold">
+                        <span>${displayArea} ${originText ? `<span class="text-xs font-normal text-gray-500 italic ml-1">${originText}</span>` : ''}</span>
                         <span>${icon}</span>
                     </div>
                     <div class="flex justify-between mt-1 text-xs opacity-80">
@@ -2871,6 +2906,7 @@ const init = async () => {
 	
 
 init();
+
 
 
 
