@@ -828,22 +828,70 @@ const renderThroughputMetrics = () => {
         const limit = managerViewMode === 'day' ? 14 : 8;
         
         sortedKeys.slice(0, limit).forEach(key => {
-            const rowData = dataPool[key];
-            const tr = document.createElement('tr');
-            const tdLabel = document.createElement('td');
-            tdLabel.className = "px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 bg-white border-r text-center";
-            tdLabel.textContent = managerViewMode === 'day' ? formatDateReadable(key) : `Week ${key.split('W')[1]}`;
-            tr.appendChild(tdLabel);
-            appConfig.areas.forEach(area => {
-                const td = document.createElement('td');
-                td.className = "px-2 py-2 whitespace-nowrap text-sm text-gray-500 text-center";
-                const val = rowData[area] || 0;
-                td.textContent = val;
-                if(val > 0) td.classList.add('text-indigo-600', 'font-semibold', 'bg-indigo-50');
-                tr.appendChild(td);
+                const rowData = dataPool[key];
+                const tr = document.createElement('tr');
+                const tdLabel = document.createElement('td');
+                tdLabel.className = "px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 bg-white border-r text-center";
+                tdLabel.textContent = managerViewMode === 'day' ? formatDateReadable(key) : `Week ${key.split('W')[1]}`;
+                tr.appendChild(tdLabel);
+                appConfig.areas.forEach(area => {
+                    const td = document.createElement('td');
+                    td.className = "px-2 py-2 whitespace-nowrap text-sm text-gray-500 text-center";
+                    const val = rowData[area] || 0;
+                    td.textContent = val;
+                    if(val > 0) td.classList.add('text-indigo-600', 'font-semibold', 'bg-indigo-50');
+                    tr.appendChild(td);
+                });
+                historyTableBody.appendChild(tr);
             });
-            historyTableBody.appendChild(tr);
-        });
+
+            // --- NEW: Render Completed Vehicles Breakdown ---
+            const completedMetricsGrid = document.getElementById('completed-metrics-grid');
+            if (completedMetricsGrid) {
+                completedMetricsGrid.innerHTML = '';
+                
+                // Set up counters
+                const completedCounts = {};
+                (appConfig.models || []).forEach(m => completedCounts[m] = 0);
+                completedCounts['Unknown'] = 0;
+
+                // Calculate totals
+                let totalCompleted = 0;
+                allCars.forEach(car => {
+                    if (car.status === 'Finished') {
+                        totalCompleted++;
+                        const m = car.model || 'Unknown';
+                        if (completedCounts[m] !== undefined) {
+                            completedCounts[m]++;
+                        } else {
+                            completedCounts['Unknown']++;
+                        }
+                    }
+                });
+
+                // Render Total Card (Green)
+                const totalCard = document.createElement('div');
+                totalCard.className = 'bg-green-50 p-3 rounded-lg border border-green-200 text-center';
+                totalCard.innerHTML = `<p class="text-[10px] font-bold text-green-600 uppercase truncate">Total Completed</p><p class="text-2xl font-bold text-green-700">${totalCompleted}</p>`;
+                completedMetricsGrid.appendChild(totalCard);
+
+                // Render Individual Model Cards
+                (appConfig.models || []).forEach(m => {
+                    const card = document.createElement('div');
+                    card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center';
+                    card.innerHTML = `<p class="text-[10px] font-bold text-gray-500 uppercase truncate" title="${m}">${m}</p><p class="text-2xl font-bold text-gray-700">${completedCounts[m]}</p>`;
+                    completedMetricsGrid.appendChild(card);
+                });
+                
+                // Show 'Unknown' models only if there are any
+                if (completedCounts['Unknown'] > 0) {
+                    const card = document.createElement('div');
+                    card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center';
+                    card.innerHTML = `<p class="text-[10px] font-bold text-gray-500 uppercase truncate" title="Unknown">Unknown</p><p class="text-2xl font-bold text-gray-700">${completedCounts['Unknown']}</p>`;
+                    completedMetricsGrid.appendChild(card);
+                }
+            }
+            // ------------------------------------------------
 
         // NEW: Populate "Live Inventory Counts" for Manager
         wipSummaryGrid.innerHTML = '';
@@ -2735,4 +2783,5 @@ const init = async () => {
 	
 
 init();
+
 
