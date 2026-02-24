@@ -1144,63 +1144,104 @@ window.renderNonWorkingAreas = () => {
      appConfig.nonWorkingAreas.forEach(nwa => {
          const cars = carsByTemp[nwa] || [];
          const div = document.createElement('div');
-         div.className = "bg-gray-100 p-4 rounded-xl border border-gray-200 hover:shadow-lg transition";
          
-         let content = `<h4 class="font-bold text-gray-700 border-b pb-2 mb-3 flex justify-between items-center">
-            ${nwa} <span class="bg-gray-200 text-gray-600 py-1 px-2 rounded-full text-xs">${cars.length}</span>
-         </h4>
-         <div class="space-y-2 max-h-60 overflow-y-auto pr-1">`;
-         
-         if (cars.length === 0) {
-             content += `<p class="text-xs text-gray-400 italic text-center py-4">Empty</p>`;
-         } else {
-             cars.forEach(c => {
-                 // Calculate duration
-                 let durationStr = '--';
-                 if (c.lastUpdated) {
-                     const diffMs = new Date() - c.lastUpdated.toDate();
-                     const diffHrs = Math.floor(diffMs / 3600000);
-                     const diffMins = Math.round((diffMs % 3600000) / 60000);
-                     durationStr = `${diffHrs}h ${diffMins}m`;
-                 }
-                 
-                 // FIX: Determine correct display of origin
-                 const originText = c.visitorHost ? `${c.visitorHost} (via ${c.currentArea})` : `From ${c.currentArea}`;
+         // Style similar to WIP pots but distinct gray border
+         div.className = "bg-white rounded-xl shadow-lg p-4 border-t-8 border-gray-400 flex flex-col h-full cursor-pointer hover:shadow-xl transition transform hover:-translate-y-1 relative group";
+         div.onclick = () => openNWAModal(nwa);
 
-                 // --- CALCULATE AGING FOR NWA CARDS ---
-                 const aging = getAgingDetails(c);
-                 const styles = getAgingStyles(aging.status);
-                 
-                 let cardClass = "text-xs p-3 rounded-lg bg-white border border-gray-100 shadow-sm hover:border-indigo-200 transition group";
-                 let badgeHtml = "";
-                 
-                 if(aging.status !== 'normal') {
-                     cardClass = `text-xs p-3 rounded-lg ${styles.bg} border ${styles.border} shadow-sm transition group`;
-                     badgeHtml = `<span class="block mt-1 text-[9px] font-bold ${styles.text} bg-white border ${styles.border} px-1.5 py-0.5 rounded uppercase w-max">${styles.badgeText} (${aging.days}d)</span>`;
-                 }
-                 // -------------------------------------
+         let chipsHtml = cars.length === 0 ? '<p class="text-gray-400 text-sm italic w-full text-center mt-4">Empty</p>' : cars.map(c => {
+             const aging = getAgingDetails(c);
+             const styles = getAgingStyles(aging.status);
+             let chipClass = 'bg-gray-50 text-gray-700 border-gray-200';
+             if(aging.status !== 'normal') chipClass = `${styles.bg} ${styles.text} ${styles.border} shadow-sm`;
+             return `<span class="inline-block px-2 py-1 text-xs font-mono font-bold ${chipClass} rounded border">${c.vin}${c.model ? ' <span class="text-[9px] text-gray-500 font-sans">'+c.model+'</span>' : ''}</span>`;
+         }).join('');
 
-                 content += `
-                    <div class="${cardClass}">
-                        <div class="flex justify-between items-start mb-1">
-                            <div>
-                                <button onclick="viewCarHistory('${c.vin}')" class="font-mono font-bold text-indigo-700 hover:text-indigo-900 hover:underline text-sm">${c.vin}</button>
-                                ${badgeHtml}
-                            </div>
-                            <span class="text-[10px] font-semibold text-gray-500 bg-gray-50 border px-1.5 py-0.5 rounded shrink-0 ml-2">${durationStr}</span>
-                        </div>
-                        <div class="flex justify-between text-gray-500 mt-1">
-                            <span class="font-medium">${c.model || 'Unknown'}</span>
-                            <span class="italic text-[10px]">${originText}</span>
-                        </div>
-                    </div>`;
-
-             });
-         }
-         content += `</div>`;
-         div.innerHTML = content;
+         div.innerHTML = `
+            <div class="flex justify-between items-baseline mb-3">
+                <h3 class="text-lg font-bold text-gray-800">${nwa}</h3>
+                <span class="text-sm font-semibold px-2 py-0.5 bg-gray-100 rounded text-gray-600">${cars.length}</span>
+            </div>
+            <div class="flex flex-wrap gap-2 content-start min-h-[80px]">
+                ${chipsHtml}
+            </div>
+            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-5 transition rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none">
+                <span class="bg-white px-3 py-1 rounded-full shadow text-xs font-bold text-gray-700">View Details</span>
+            </div>
+         `;
          nonWorkingGrid.appendChild(div);
      });
+};
+
+// NEW: NWA Modal Logic
+window.openNWAModal = (nwa) => {
+     const cars = carsByTemp[nwa] || [];
+     document.getElementById('nwa-list-title').textContent = `${nwa} Vehicles`;
+     const content = document.getElementById('nwa-list-content');
+     content.innerHTML = '';
+
+     if(cars.length === 0) {
+         content.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-400 italic">No vehicles in this location.</td></tr>';
+     } else {
+         cars.forEach(c => {
+             // Calculate duration
+             let durationStr = '--';
+             if (c.lastUpdated) {
+                 const diffMs = new Date() - (c.lastUpdated.toDate ? c.lastUpdated.toDate() : new Date(c.lastUpdated));
+                 const diffHrs = Math.floor(diffMs / 3600000);
+                 const diffMins = Math.round((diffMs % 3600000) / 60000);
+                 durationStr = `${diffHrs}h ${diffMins}m`;
+             }
+
+             const originText = c.visitorHost ? `${c.visitorHost} (via ${c.currentArea})` : `From ${c.currentArea}`;
+             const draft = c.tempData || {};
+
+             // Calculate Aging
+             const aging = getAgingDetails(c);
+             const styles = getAgingStyles(aging.status);
+             let rowClass = aging.status !== 'normal' ? styles.tableRow : "hover:bg-gray-50";
+             let agingIndicator = aging.status !== 'normal' ? `<span class="block text-[9px] font-bold ${styles.text} bg-white border ${styles.border} px-1.5 py-0.5 rounded uppercase mt-1.5 tracking-wide shadow-sm w-max mx-auto">${styles.badgeText} (${aging.days}d)</span>` : '';
+
+             content.innerHTML += `
+                <tr class="${rowClass} transition">
+                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs font-bold font-mono text-indigo-900">
+                        <button onclick="viewCarHistory('${c.vin}')" class="hover:underline decoration-dotted hover:text-indigo-600 transition">${c.vin}</button>
+                        ${agingIndicator}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs text-gray-500">${c.model || '-'}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs text-gray-700 italic">${originText}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs font-semibold text-gray-600">${durationStr}</td>
+                    <td class="px-4 py-3">
+                        <textarea 
+                            oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"
+                            onfocus="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"
+                            onchange="saveDraftData('${c.vin}', 'comment', this.value)" 
+                            class="w-full text-xs border border-gray-300 rounded p-1.5 bg-white/50 focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none overflow-hidden resize-none min-h-[2.5rem]" 
+                            placeholder="..."
+                        >${draft.comment || ''}</textarea>
+                    </td>
+                </tr>
+             `;
+         });
+     }
+     document.getElementById('nwa-list-modal').classList.remove('hidden');
+     document.getElementById('nwa-list-modal').classList.add('flex');
+};
+
+window.closeNWAModal = () => {
+     document.getElementById('nwa-list-modal').classList.add('hidden');
+     document.getElementById('nwa-list-modal').classList.remove('flex');
+};
+
+window.filterNWAList = () => {
+    const filter = document.getElementById('nwa-list-search').value.toUpperCase();
+    const trs = document.getElementById('nwa-list-content').getElementsByTagName('tr');
+    for (let i = 0; i < trs.length; i++) {
+        const td = trs[i].getElementsByTagName('td')[0];
+        if (td) {
+            trs[i].style.display = (td.textContent || td.innerText).toUpperCase().indexOf(filter) > -1 ? "" : "none";
+        }
+    }
 };
 
 const renderWIPBoard = () => {
@@ -2694,3 +2735,4 @@ const init = async () => {
 	
 
 init();
+
