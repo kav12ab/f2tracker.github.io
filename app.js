@@ -917,7 +917,7 @@ const renderThroughputMetrics = () => {
             completedMetricsGrid.appendChild(totalCard);
 
             // Print Individual Models (Only for actively selected models in the filter)
-            selectedModelsFilter.forEach(m => {
+			selectedModelsFilter.forEach(m => {
                 const count = completedByModel[m] || 0;
                 const card = document.createElement('div');
                 card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center shadow-sm';
@@ -925,6 +925,56 @@ const renderThroughputMetrics = () => {
                 completedMetricsGrid.appendChild(card);
             });
         }
+
+        // --- NEW: RENDER AVG TIME IN SYSTEM ---
+        let activeCount = 0; let activeDaysSum = 0;
+        let compCount = 0; let compDaysSum = 0;
+        
+        allCars.forEach(car => {
+            const carModel = car.model || 'Unknown';
+            if (!selectedModelsFilter.includes(carModel)) return;
+            
+            const aging = getAgingDetails(car);
+            
+            if (car.status !== 'Finished') {
+                activeCount++;
+                activeDaysSum += aging.days;
+            } else {
+                const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
+                const finishDateStr = finishDate.toISOString().split('T')[0];
+                let isCompletedInPeriod = false;
+                if (managerViewMode === 'day' && finishDateStr === today) isCompletedInPeriod = true;
+                if (managerViewMode === 'week' && finishDate >= weekStart) isCompletedInPeriod = true;
+                
+                if (isCompletedInPeriod) {
+                    compCount++;
+                    compDaysSum += aging.days;
+                }
+            }
+        });
+        
+        const avgActive = activeCount > 0 ? Math.round(activeDaysSum / activeCount) : 0;
+        const avgComp = compCount > 0 ? Math.round(compDaysSum / compCount) : 0;
+        
+        const avgTimeContainer = document.getElementById('avg-system-time-container');
+        if (avgTimeContainer) {
+            avgTimeContainer.innerHTML = `
+                <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3 mt-6">Average Time in System (Working Days)</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+                    <div class="bg-indigo-50 p-3 rounded-lg border border-indigo-200 text-center shadow-sm">
+                        <p class="text-[10px] font-bold text-indigo-600 uppercase truncate">Active Vehicles</p>
+                        <p class="text-2xl font-bold text-indigo-700">${avgActive} <span class="text-xs font-normal text-indigo-500">days</span></p>
+                    </div>
+                    <div class="bg-green-50 p-3 rounded-lg border border-green-200 text-center shadow-sm">
+                        <p class="text-[10px] font-bold text-green-600 uppercase truncate">Completed Vehicles</p>
+                        <p class="text-2xl font-bold text-green-700">${avgComp} <span class="text-xs font-normal text-green-500">days</span></p>
+                    </div>
+                </div>
+            `;
+        }
+        // --------------------------------------
+
+        // --- 5. RENDER HISTORY TABLE ---
 
         // --- 5. RENDER HISTORY TABLE ---
         historyTableTitle.textContent = managerViewMode === 'day' ? 'Daily History (Last 14 Days)' : 'Weekly History';
@@ -2031,6 +2081,7 @@ window.handleTrackSearch = () => {
                 <div class="text-right text-xs">
                     <p><span class="font-bold text-gray-600">KENN:</span> ${carData.kenn || '--'}</p>
                     <p><span class="font-bold text-gray-600">SEQ:</span> ${carData.sequence || '--'}</p>
+                    <p class="mt-1"><span class="font-bold text-gray-600">SYS TIME:</span> ${getAgingDetails(carData).days} Working Days</p>
                 </div>
             </div>
             <p class="mt-2 text-lg">Currently: <strong>${carData.currentArea}</strong> (${carData.status})</p>
@@ -2070,12 +2121,12 @@ window.openModal = (vin, history) => {
      const header = document.getElementById('history-modal-header');
      if(header) header.className = `${styles.headerBg} p-6 text-white transition-colors duration-300`;
      
-     const badgeContainer = document.getElementById('modal-aging-badge-container');
+	const badgeContainer = document.getElementById('modal-aging-badge-container');
      if(badgeContainer) {
          if(aging.status !== 'normal') {
              badgeContainer.innerHTML = `<span class="inline-block mt-2 px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider border border-white/30 backdrop-blur-sm shadow-sm">${styles.badgeText} (${aging.days} Working Days)</span>`;
          } else {
-             badgeContainer.innerHTML = '';
+             badgeContainer.innerHTML = `<span class="inline-block mt-2 px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider border border-white/30 backdrop-blur-sm shadow-sm">${aging.days} Working Days</span>`;
          }
      }
      // ----------------------------------------------     
@@ -2448,10 +2499,12 @@ window.toggleDropdown = (id, event) => {
 // Close dropdowns if clicking anywhere outside them
 document.addEventListener('click', (e) => {
     if (!e.target.closest('.dropdown-container')) {
-        const d1 = document.getElementById('dropdown-hist-zones');
+		const d1 = document.getElementById('dropdown-hist-zones');
         const d2 = document.getElementById('dropdown-trend-zones');
+        const d3 = document.getElementById('dropdown-aging-models'); // NEW
         if(d1 && !d1.classList.contains('hidden')) d1.classList.add('hidden');
         if(d2 && !d2.classList.contains('hidden')) d2.classList.add('hidden');
+        if(d3 && !d3.classList.contains('hidden')) d3.classList.add('hidden'); // NEW
     }
 });
 
@@ -2501,12 +2554,39 @@ window.renderAnalyticsDashboard = () => {
         });
     }
 
+	// NEW: System Aging Setup
+    const analyticsAgingStart = document.getElementById('analytics-aging-start');
+    const analyticsAgingEnd = document.getElementById('analytics-aging-end');
+    if(analyticsAgingEnd) {
+        if(!analyticsAgingEnd.value) analyticsAgingEnd.value = todayStr;
+        if(!analyticsAgingStart.value) analyticsAgingStart.value = twoWeeksAgoStr;
+
+        const agingModelsDropdown = document.getElementById('dropdown-aging-models');
+        if(agingModelsDropdown && agingModelsDropdown.children.length === 0) {
+            (appConfig.models || []).forEach(m => {
+                agingModelsDropdown.innerHTML += `
+                    <label class="flex items-center px-4 py-2 hover:bg-gray-50 cursor-pointer text-sm text-gray-700">
+                        <input type="checkbox" value="${m}" class="form-checkbox h-4 w-4 text-indigo-600 mr-2 aging-model-cb" checked onchange="renderAgingCharts()">
+                        ${m}
+                    </label>
+                `;
+            });
+            agingModelsDropdown.innerHTML += `
+                <label class="flex items-center px-4 py-2 hover:bg-gray-50 cursor-pointer text-sm text-gray-700">
+                    <input type="checkbox" value="Unknown" class="form-checkbox h-4 w-4 text-indigo-600 mr-2 aging-model-cb" checked onchange="renderAgingCharts()">
+                    Unknown
+                </label>
+            `;
+        }
+    }
+
     renderDailyThroughputChart();
     renderHistoricalThroughputChart();
     renderWipStatusChart();
     renderPostWipStatusChart();
     renderAvgReworkChart();
     renderReworkTrendLineChart();
+	if(analyticsAgingEnd) renderAgingCharts(); // Add this line
 };
 
 const getChartContext = (id) => {
@@ -2871,6 +2951,92 @@ window.renderReworkTrendLineChart = () => {
     });
 };
 
+// NEW: Aging / Time in System Charts
+window.renderAgingCharts = () => {
+    const startStr = document.getElementById('analytics-aging-start').value;
+    const endStr = document.getElementById('analytics-aging-end').value;
+    if(!startStr || !endStr) return;
+
+    const selectedModels = Array.from(document.querySelectorAll('.aging-model-cb:checked')).map(cb => cb.value);
+
+    // Build date array for Trend Chart
+    const dates = [];
+    let currDate = new Date(startStr);
+    const endDate = new Date(endStr);
+    while(currDate <= endDate) {
+        dates.push(currDate.toISOString().split('T')[0]);
+        currDate.setDate(currDate.getDate() + 1);
+    }
+
+    const completedDaysSum = dates.map(() => 0);
+    const completedCounts = dates.map(() => 0);
+
+    const activeDaysSum = {};
+    const activeCounts = {};
+    appConfig.areas.forEach(a => { activeDaysSum[a] = 0; activeCounts[a] = 0; });
+    (appConfig.postWipZones || []).forEach(z => { activeDaysSum[z] = 0; activeCounts[z] = 0; });
+
+    allCars.forEach(car => {
+        const carModel = car.model || 'Unknown';
+        if (!selectedModels.includes(carModel)) return;
+        
+        const aging = getAgingDetails(car);
+
+        if (car.status === 'Finished') {
+            const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
+            const dateStr = finishDate.toISOString().split('T')[0];
+            const dateIndex = dates.indexOf(dateStr);
+            if(dateIndex !== -1) {
+                completedDaysSum[dateIndex] += aging.days;
+                completedCounts[dateIndex]++;
+            }
+        } else {
+            // Active
+            if (activeCounts[car.currentArea] !== undefined) {
+                activeDaysSum[car.currentArea] += aging.days;
+                activeCounts[car.currentArea]++;
+            }
+        }
+    });
+
+    const completedAvg = completedDaysSum.map((sum, idx) => completedCounts[idx] > 0 ? Math.round(sum / completedCounts[idx]) : 0);
+
+    // Chart 1: Trend Line (Completed)
+    chartInstances['chart-aging-completed-trend'] = new Chart(getChartContext('chart-aging-completed-trend'), {
+        type: 'line',
+        data: {
+            labels: dates.map(d => d.slice(5)), 
+            datasets: [{
+                label: 'Avg Days in System (Completed)',
+                data: completedAvg,
+                borderColor: '#10b981', // Emerald
+                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+    });
+
+    // Chart 2: Snapshot Bar (Active)
+    const activeAreas = [...appConfig.areas, ...(appConfig.postWipZones || [])];
+    const activeAvg = activeAreas.map(a => activeCounts[a] > 0 ? Math.round(activeDaysSum[a] / activeCounts[a]) : 0);
+
+    chartInstances['chart-aging-active-snapshot'] = new Chart(getChartContext('chart-aging-active-snapshot'), {
+        type: 'bar',
+        data: {
+            labels: activeAreas,
+            datasets: [{
+                label: 'Avg Days in System (Active WIP)',
+                data: activeAvg,
+                backgroundColor: '#3b82f6', // Blue
+                borderRadius: 4
+            }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+    });
+};
+
 // Init
 const init = async () => {
     await fetchUKBankHolidays();
@@ -2899,6 +3065,7 @@ const init = async () => {
 	
 
 init();
+
 
 
 
