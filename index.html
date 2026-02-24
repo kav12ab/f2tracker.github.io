@@ -142,14 +142,26 @@
                     </div>
                 </div>
 
-                <div id="manager-throughput-display" class="hidden">
-                    <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3">Live Today</h3>
+				<div id="manager-throughput-display" class="hidden">
+                    
+                    <div class="mb-8 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                        <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Filter Throughput by Model</h3>
+                        <div id="throughput-model-filters" class="flex flex-wrap gap-2">
+                            </div>
+                    </div>
+
+                    <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3">Live Throughput</h3>
                     <div id="throughput-metrics-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-8"></div>
+
+                    <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center">
+                        <span id="completed-title-period">Completed Vehicles</span>
+                    </h3>
+                    <div id="completed-metrics-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-8"></div>
 
                     <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3 flex items-center">
                         <span id="history-table-title">Daily History (Last 14 Days)</span>
                     </h3>
-                    <div class="overflow-x-auto border rounded-lg max-h-60 scroll-area mb-8">
+                    <div class="overflow-x-auto border rounded-lg max-h-60 scroll-area mb-8 shadow-sm">
                         <table class="min-w-full divide-y divide-gray-200">
                             <thead class="bg-gray-50">
                                 <tr id="history-table-header"></tr>
@@ -157,9 +169,6 @@
                             <tbody class="bg-white divide-y divide-gray-200" id="history-table-body"></tbody>
                         </table>
                     </div>
-
-					<h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3 mt-6">Completed Vehicles (All-Time)</h3>
-                    <div id="completed-metrics-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3"></div>
                 </div>
             </div>
 
@@ -734,5 +743,6 @@
 </body>
 
 </html>
+
 
 
