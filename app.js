@@ -1672,12 +1672,13 @@ window.sendToTemp = async (vin, target) => {
             visitorHost = currentUserRole;
         }
 
-        await updateDoc(doc(db, COLLECTION_PATH, vin), {
-            tempLocation: target,
-            visitorHost: visitorHost, // Save who sent it to NWA if not owner
-            lastUpdated: Timestamp.now(),
-            history: [...(car.history||[]), { area: target, status: 'Temp Move', timestamp: Timestamp.now(), userId, from: fromLocation, metrics: metricsSnapshot }]
-        });
+	await updateDoc(doc(db, COLLECTION_PATH, vin), {
+                tempLocation: target,
+                visitorHost: visitorHost, // Save who sent it to NWA if not owner
+                lastUpdated: Timestamp.now(),
+                history: [...(car.history||[]), { area: fromLocation, status: 'Temp Move', timestamp: Timestamp.now(), userId, to: target, metrics: metricsSnapshot }]
+            });
+		
     } catch(e) { alert(e.message); }
 };
 
@@ -1685,7 +1686,7 @@ window.returnCar = async (vin) => {
     if(!userId) return;
     const car = allCars.find(c=>c.vin===vin);
     
-    // NEW: Capture the inputted VA/NVA/Notes before returning
+    // Capture the inputted VA/NVA/Notes before returning
     const draft = car.tempData || {};
     const metricsSnapshot = { 
         va: draft.va || 0, 
@@ -1698,20 +1699,18 @@ window.returnCar = async (vin) => {
     try {
         await updateDoc(doc(db, COLLECTION_PATH, vin), {
             tempLocation: null, 
-            visitorHost: null, // Clear host on full return
-            tempData: {}, // NEW: Clear the textboxes so they don't bleed into the next stage
+            visitorHost: null, 
+            tempData: {}, 
             lastUpdated: Timestamp.now(),
-            history: [...(car.history||[]), { area: car.currentArea, status: 'Returned', timestamp: Timestamp.now(), userId, from: car.tempLocation, metrics: metricsSnapshot }]
+            // Log under where it WAS, pointing to where it is GOING
+            history: [...(car.history||[]), { area: car.tempLocation || car.currentArea, status: 'Returned', timestamp: Timestamp.now(), userId, to: car.currentArea, metrics: metricsSnapshot }]
         });
     } catch(e) { alert(e.message); }
 };
 
-// Daisy-chain retrieval logic
 window.retrieveCar = async (vin) => {
      const car = allCars.find(c=>c.vin===vin);
-     // If I am the visitorHost, bring it back to ME (tempLocation = me), keep visitorHost set
      if (car.visitorHost === currentUserRole) {
-         // NEW: Capture the inputted VA/NVA/Notes before retrieving
          const draft = car.tempData || {};
          const metricsSnapshot = { 
              va: draft.va || 0, 
@@ -1724,17 +1723,15 @@ window.retrieveCar = async (vin) => {
          try {
             await updateDoc(doc(db, COLLECTION_PATH, vin), {
                 tempLocation: currentUserRole,
-                // visitorHost remains set until returned to owner
-                tempData: {}, // NEW: Clear the textboxes
+                tempData: {}, 
                 lastUpdated: Timestamp.now(),
-                history: [...(car.history||[]), { area: currentUserRole, status: 'Retrieved', timestamp: Timestamp.now(), userId, from: car.tempLocation, metrics: metricsSnapshot }]
+                history: [...(car.history||[]), { area: car.tempLocation, status: 'Retrieved', timestamp: Timestamp.now(), userId, to: currentUserRole, metrics: metricsSnapshot }]
             });
         } catch(e) { alert(e.message); }
      } else {
-         // Standard retrieve by owner
          window.returnCar(vin); 
      }
-}; 
+};
 
 const populateAreaSelect = () => {
     if (!addCarAreaSelect) return;
@@ -1952,7 +1949,7 @@ btnConfirmMove.onclick = async () => {
                 history: [...(car.history||[]), { area: currentArea, status: 'Finished', timestamp: Timestamp.now(), userId, metrics: metricsSnapshot }]
              });
              showMessage(`${vin} completed from Post-WIP.`);
-        } else {
+		} else {
             // Temp Move (Standard OR Visitor-to-NWA)
             // Determine FROM location: if current user is temp host, from is temp host. else from owner.
             const fromLoc = (car.tempLocation === currentUserRole) ? currentUserRole : car.currentArea;
@@ -1964,7 +1961,7 @@ btnConfirmMove.onclick = async () => {
                 tempLocation: target,
                 visitorHost: newHost,
                 lastUpdated: timestamp,
-                history: [...(car.history||[]), { area: target, status: 'Temp Move', timestamp: Timestamp.now(), userId, from: fromLoc, metrics: metricsSnapshot }]
+                history: [...(car.history||[]), { area: fromLoc, status: 'Temp Move', timestamp: Timestamp.now(), userId, to: target, metrics: metricsSnapshot }]
             });
             showMessage(`${vin} moved to ${target}.`);
         }
@@ -2006,7 +2003,7 @@ window.handleTrackSearch = () => {
              }
 
              html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
-                <p class="font-bold text-gray-800">${h.area} <span class="text-xs font-normal bg-white border px-1 rounded ml-2">${title}</span></p>
+				<p class="font-bold text-gray-800">${h.area} ${h.to ? `<span class="text-xs font-normal text-gray-400 italic ml-1">&rarr; ${h.to}</span>` : ''} <span class="text-xs font-normal bg-white border px-1 rounded ml-2">${title}</span></p>
                 <p class="text-xs text-gray-500">${new Date(h.timestamp.toDate()).toLocaleString()}</p>
                 ${extras}
              </div>`;
@@ -2123,8 +2120,8 @@ window.openModal = (vin, history) => {
             <div class="mb-4 last:mb-0 relative pl-4 border-l-2 border-gray-200">
                 <div class="absolute -left-[9px] top-0 w-4 h-4 rounded-full ${iconColor} border-2 border-white"></div>
                 <div class="bg-white p-3 rounded border ${colorClass} text-sm">
-                    <div class="flex justify-between font-bold">
-                        <span>${item.area}</span>
+					<div class="flex justify-between font-bold">
+                        <span>${item.area} ${item.to ? `<span class="text-xs font-normal text-gray-400 italic ml-1">&rarr; ${item.to}</span>` : ''}</span>
                         <span>${icon}</span>
                     </div>
                     <div class="flex justify-between mt-1 text-xs opacity-80">
@@ -2874,6 +2871,7 @@ const init = async () => {
 	
 
 init();
+
 
 
 
