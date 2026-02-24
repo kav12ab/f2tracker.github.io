@@ -1,0 +1,87 @@
+/* style.css */
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: #f7f9fc;
+}
+
+/* --- Scrollbar Customization --- */
+.scroll-area {
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+/* Custom scrollbar for webkit (Chrome, Safari, Edge) */
+.scroll-area::-webkit-scrollbar {
+    width: 6px;
+}
+.scroll-area::-webkit-scrollbar-track {
+    background: #f1f1f1; 
+}
+.scroll-area::-webkit-scrollbar-thumb {
+    background: #c7c7c7; 
+    border-radius: 3px;
+}
+
+/* --- Login Screen Background --- */
+.login-bg {
+    background-image: radial-gradient(#e0e7ff 1px, transparent 1px);
+    background-size: 20px 20px;
+}
+
+/* --- Status Tag Styles --- */
+.status-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-right: 4px;
+    margin-bottom: 2px;
+    background-color: #d1fae5;
+    color: #065f46;
+    border: 1px solid #a7f3d0;
+}
+.status-tag button {
+    margin-left: 4px;
+    color: #047857;
+    cursor: pointer;
+}
+.status-tag button:hover {
+    color: #ef4444;
+}
+
+/* --- Tag Badge Styles (Rounder, used for tags inside lists) --- */
+.tag-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    margin-right: 3px;
+    margin-bottom: 3px;
+    background-color: #e0e7ff; /* Indigo-100 */
+    color: #3730a3; /* Indigo-800 */
+    border: 1px solid #c7d2fe; /* Indigo-200 */
+    box-shadow: 0 1px 1px rgba(0,0,0,0.05);
+}
+.tag-badge button {
+    margin-left: 5px;
+    color: #6366f1;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    transition: all 0.2s;
+}
+.tag-badge button:hover {
+    background-color: #ffffff;
+    color: #ef4444; /* Red-500 */
+}
