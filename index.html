@@ -696,9 +696,42 @@
             </div>
         </div>
 
+		<div id="nwa-list-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 z-40 hidden items-center justify-center p-4">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh]">
+                <div class="p-6 border-b flex justify-between items-center bg-gray-50">
+                    <h3 class="text-2xl font-bold text-gray-800" id="nwa-list-title">NWA Details</h3>
+                    <button onclick="closeNWAModal()" class="text-gray-400 hover:text-gray-700 transition">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                </div>
+                <div class="p-4 bg-gray-50 border-b">
+                    <input type="text" id="nwa-list-search" onkeyup="filterNWAList()" placeholder="Search VIN..." class="w-full p-2 border border-gray-300 rounded focus:ring-indigo-500 focus:border-indigo-500 text-sm uppercase">
+                </div>
+                <div class="p-0 overflow-y-auto flex-grow bg-white">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">VIN</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Origin</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Time in NWA</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-4/12">Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="nwa-list-content" class="bg-white divide-y divide-gray-200"></tbody>
+                    </table>
+                </div>
+                <div class="p-4 bg-gray-50 border-t text-right">
+                    <button onclick="closeNWAModal()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300 font-medium">Close</button>
+                </div>
+            </div>
+        </div>
+		
+
     </div>
 
     <script type="module" src="app.js"></script>
 </body>
 
 </html>
+
