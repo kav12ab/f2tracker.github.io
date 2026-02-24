@@ -2016,15 +2016,8 @@ window.handleTrackSearch = () => {
                  originText = `(from ${h.from})`;
              }
 
-             html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
+		html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
                 <p class="font-bold text-gray-800">${displayArea} ${originText ? `<span class="text-xs font-normal text-gray-500 italic ml-1">${originText}</span>` : ''} <span class="text-xs font-normal bg-white border px-1 rounded ml-2">${title}</span></p>
-                <p class="text-xs text-gray-500">${new Date(h.timestamp.toDate()).toLocaleString()}</p>
-                ${extras}
-             </div>`;
-             }
-
-             html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
-				<p class="font-bold text-gray-800">${h.area} ${h.to ? `<span class="text-xs font-normal text-gray-400 italic ml-1">&rarr; ${h.to}</span>` : ''} <span class="text-xs font-normal bg-white border px-1 rounded ml-2">${title}</span></p>
                 <p class="text-xs text-gray-500">${new Date(h.timestamp.toDate()).toLocaleString()}</p>
                 ${extras}
              </div>`;
@@ -2906,6 +2899,7 @@ const init = async () => {
 	
 
 init();
+
 
 
 
