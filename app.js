@@ -1978,15 +1978,20 @@ window.switchView = (v) => {
     // FIX: Reset Aging tab styling to default before checking visibility
     if(navAging) navAging.className = 'hidden pb-3 text-gray-500 hover:text-indigo-600 transition-colors flex items-center';
 
-    if(['Admin', 'Manager', 'PostWIPManager'].includes(currentUserRole)) {
+   if(['Admin', 'Manager', 'PostWIPManager'].includes(currentUserRole)) {
         if(navAging) navAging.classList.remove('hidden');
     } else {
         if(navAging) navAging.classList.add('hidden');
     }
 
-    if(currentUserRole === 'Admin' || currentUserRole === 'Manager') {
+    // Only Admin can see settings
+    if(currentUserRole === 'Admin') {
         navSettings.classList.remove('hidden');
-        navAnalytics.classList.remove('hidden');
+    }
+    
+    // Both Admin and Manager can see analytics
+    if(currentUserRole === 'Admin' || currentUserRole === 'Manager') {
+        if(navAnalytics) navAnalytics.classList.remove('hidden');
     }
     
     dash.classList.add('hidden');
@@ -2687,4 +2692,5 @@ const init = async () => {
     });
 };
 	
+
 init();
