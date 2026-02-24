@@ -1684,12 +1684,24 @@ window.sendToTemp = async (vin, target) => {
 window.returnCar = async (vin) => {
     if(!userId) return;
     const car = allCars.find(c=>c.vin===vin);
+    
+    // NEW: Capture the inputted VA/NVA/Notes before returning
+    const draft = car.tempData || {};
+    const metricsSnapshot = { 
+        va: draft.va || 0, 
+        nva: draft.nva || 0, 
+        comment: draft.comment || '', 
+        status: draft.status || '', 
+        tags: draft.statuses || [] 
+    };
+
     try {
         await updateDoc(doc(db, COLLECTION_PATH, vin), {
             tempLocation: null, 
             visitorHost: null, // Clear host on full return
+            tempData: {}, // NEW: Clear the textboxes so they don't bleed into the next stage
             lastUpdated: Timestamp.now(),
-            history: [...(car.history||[]), { area: car.currentArea, status: 'Returned', timestamp: Timestamp.now(), userId }]
+            history: [...(car.history||[]), { area: car.currentArea, status: 'Returned', timestamp: Timestamp.now(), userId, from: car.tempLocation, metrics: metricsSnapshot }]
         });
     } catch(e) { alert(e.message); }
 };
@@ -1699,12 +1711,23 @@ window.retrieveCar = async (vin) => {
      const car = allCars.find(c=>c.vin===vin);
      // If I am the visitorHost, bring it back to ME (tempLocation = me), keep visitorHost set
      if (car.visitorHost === currentUserRole) {
+         // NEW: Capture the inputted VA/NVA/Notes before retrieving
+         const draft = car.tempData || {};
+         const metricsSnapshot = { 
+             va: draft.va || 0, 
+             nva: draft.nva || 0, 
+             comment: draft.comment || '', 
+             status: draft.status || '', 
+             tags: draft.statuses || [] 
+         };
+
          try {
             await updateDoc(doc(db, COLLECTION_PATH, vin), {
                 tempLocation: currentUserRole,
                 // visitorHost remains set until returned to owner
+                tempData: {}, // NEW: Clear the textboxes
                 lastUpdated: Timestamp.now(),
-                history: [...(car.history||[]), { area: currentUserRole, status: 'Retrieved', timestamp: Timestamp.now(), userId, from: car.tempLocation }]
+                history: [...(car.history||[]), { area: currentUserRole, status: 'Retrieved', timestamp: Timestamp.now(), userId, from: car.tempLocation, metrics: metricsSnapshot }]
             });
         } catch(e) { alert(e.message); }
      } else {
@@ -2851,6 +2874,7 @@ const init = async () => {
 	
 
 init();
+
 
 
 
