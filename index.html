@@ -408,7 +408,45 @@
                             <p class="text-xs text-gray-500">Analyze average working days in system for active and completed vehicles.</p>
                         </div>
                         <div class="flex flex-wrap items-center gap-3">
+                            
+                            <div class="bg-gray-100 p-1 rounded-lg flex text-xs font-bold shadow-inner">
+                                <button id="btn-aging-agg" onclick="setAgingTrendView('aggregate')" class="px-3 py-1.5 rounded bg-white text-indigo-600 shadow-sm transition">Combined</button>
+                                <button id="btn-aging-split" onclick="setAgingTrendView('split')" class="px-3 py-1.5 rounded text-gray-500 hover:text-gray-700 transition">By Model</button>
+                            </div>
+
                             <div class="relative dropdown-container">
+                                <button onclick="toggleDropdown('dropdown-aging-models', event)" class="bg-white border border-gray-300 text-gray-700 py-1.5 px-3 rounded text-sm font-medium hover:bg-gray-50 shadow-sm flex items-center">
+                                    Filter Models <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                </button>
+                                <div id="dropdown-aging-models" class="hidden absolute right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-xl z-20 max-h-48 overflow-y-auto">
+                                    </div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs font-bold text-gray-600 uppercase">From:</label>
+                                <input type="date" id="analytics-aging-start" class="border border-gray-300 rounded p-1.5 text-sm focus:border-indigo-500 outline-none" onchange="renderAgingCharts()">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs font-bold text-gray-600 uppercase">To:</label>
+                                <input type="date" id="analytics-aging-end" class="border border-gray-300 rounded p-1.5 text-sm focus:border-indigo-500 outline-none" onchange="renderAgingCharts()">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 gap-8">
+                        <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                            <h4 class="text-sm font-bold text-gray-700 mb-4 text-center">Trend: Avg Days to Complete</h4>
+                            <div class="h-80 relative">
+                                <canvas id="chart-aging-completed-trend"></canvas>
+                            </div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                            <h4 class="text-sm font-bold text-gray-700 mb-4 text-center">Snapshot: Avg Active Days by Zone</h4>
+                            <div class="h-80 relative">
+                                <canvas id="chart-aging-active-snapshot"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                                 <button onclick="toggleDropdown('dropdown-aging-models', event)" class="bg-white border border-gray-300 text-gray-700 py-1.5 px-3 rounded text-sm font-medium hover:bg-gray-50 shadow-sm flex items-center">
                                     Filter Models <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                                 </button>
@@ -784,6 +822,7 @@
 </body>
 
 </html>
+
 
 
 
