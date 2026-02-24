@@ -42,6 +42,7 @@ let stats = { today: {}, week: {}, historyDaily: {}, historyWeekly: {} };
 let currentUserRole = null; 
 let managerViewMode = 'day';
 let selectedModelsFilter = null;
+let agingTrendViewMode = 'aggregate';
 let appConfig = { 
     areas: [...DEFAULT_AREAS], 
     routing: {...DEFAULT_ROUTING}, 
@@ -794,6 +795,20 @@ window.setManagerView = (mode) => {
         btnViewDay.className = "px-3 py-1 rounded-md text-sm font-medium text-gray-500 hover:text-gray-700 transition";
     }
     renderThroughputMetrics();
+};
+
+window.setAgingTrendView = (mode) => {
+    agingTrendViewMode = mode;
+    const btnAgg = document.getElementById('btn-aging-agg');
+    const btnSplit = document.getElementById('btn-aging-split');
+    if (mode === 'aggregate') {
+        btnAgg.className = "px-3 py-1.5 rounded bg-white text-indigo-600 shadow-sm transition";
+        btnSplit.className = "px-3 py-1.5 rounded text-gray-500 hover:text-gray-700 transition";
+    } else {
+        btnSplit.className = "px-3 py-1.5 rounded bg-white text-indigo-600 shadow-sm transition";
+        btnAgg.className = "px-3 py-1.5 rounded text-gray-500 hover:text-gray-700 transition";
+    }
+    if (window.renderAgingCharts) window.renderAgingCharts();
 };
 
 // NEW: Toggle filter state and force re-render
@@ -2951,7 +2966,7 @@ window.renderReworkTrendLineChart = () => {
     });
 };
 
-// NEW: Aging / Time in System Charts
+// NEW: Aging / Time in System Charts (With Model Splitting)
 window.renderAgingCharts = () => {
     const startStr = document.getElementById('analytics-aging-start').value;
     const endStr = document.getElementById('analytics-aging-end').value;
@@ -2968,9 +2983,7 @@ window.renderAgingCharts = () => {
         currDate.setDate(currDate.getDate() + 1);
     }
 
-    const completedDaysSum = dates.map(() => 0);
-    const completedCounts = dates.map(() => 0);
-
+    // 1. Calculate Active Snapshot (Always aggregated for the selected models)
     const activeDaysSum = {};
     const activeCounts = {};
     appConfig.areas.forEach(a => { activeDaysSum[a] = 0; activeCounts[a] = 0; });
@@ -2980,18 +2993,8 @@ window.renderAgingCharts = () => {
         const carModel = car.model || 'Unknown';
         if (!selectedModels.includes(carModel)) return;
         
-        const aging = getAgingDetails(car);
-
-        if (car.status === 'Finished') {
-            const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
-            const dateStr = finishDate.toISOString().split('T')[0];
-            const dateIndex = dates.indexOf(dateStr);
-            if(dateIndex !== -1) {
-                completedDaysSum[dateIndex] += aging.days;
-                completedCounts[dateIndex]++;
-            }
-        } else {
-            // Active
+        if (car.status !== 'Finished') {
+            const aging = getAgingDetails(car);
             if (activeCounts[car.currentArea] !== undefined) {
                 activeDaysSum[car.currentArea] += aging.days;
                 activeCounts[car.currentArea]++;
@@ -2999,26 +3002,82 @@ window.renderAgingCharts = () => {
         }
     });
 
-    const completedAvg = completedDaysSum.map((sum, idx) => completedCounts[idx] > 0 ? Math.round(sum / completedCounts[idx]) : 0);
+    // 2. Calculate Trend Line(s) (Split vs Aggregate)
+    const trendDatasets = [];
+    const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
 
-    // Chart 1: Trend Line (Completed)
+    if (agingTrendViewMode === 'split') {
+        selectedModels.forEach((model, index) => {
+            const daysSum = dates.map(() => 0);
+            const counts = dates.map(() => 0);
+
+            allCars.forEach(car => {
+                const carModel = car.model || 'Unknown';
+                if (carModel !== model) return;
+                
+                if (car.status === 'Finished') {
+                    const aging = getAgingDetails(car);
+                    const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
+                    const dateStr = finishDate.toISOString().split('T')[0];
+                    const dateIndex = dates.indexOf(dateStr);
+                    if(dateIndex !== -1) {
+                        daysSum[dateIndex] += aging.days;
+                        counts[dateIndex]++;
+                    }
+                }
+            });
+
+            const avgData = daysSum.map((sum, idx) => counts[idx] > 0 ? Math.round(sum / counts[idx]) : 0);
+            // Only draw the line if there is actual data for this model
+            if (avgData.some(val => val > 0)) {
+                trendDatasets.push({
+                    label: `Avg Days (${model})`,
+                    data: avgData,
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: 'transparent',
+                    tension: 0.3
+                });
+            }
+        });
+    } else {
+        const daysSum = dates.map(() => 0);
+        const counts = dates.map(() => 0);
+        
+        allCars.forEach(car => {
+            const carModel = car.model || 'Unknown';
+            if (!selectedModels.includes(carModel)) return;
+            
+            if (car.status === 'Finished') {
+                const aging = getAgingDetails(car);
+                const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
+                const dateStr = finishDate.toISOString().split('T')[0];
+                const dateIndex = dates.indexOf(dateStr);
+                if(dateIndex !== -1) {
+                    daysSum[dateIndex] += aging.days;
+                    counts[dateIndex]++;
+                }
+            }
+        });
+
+        const avgData = daysSum.map((sum, idx) => counts[idx] > 0 ? Math.round(sum / counts[idx]) : 0);
+        trendDatasets.push({
+            label: 'Avg Days in System (Combined)',
+            data: avgData,
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+            fill: true,
+            tension: 0.3
+        });
+    }
+
+    // Render Chart 1: Trend Line
     chartInstances['chart-aging-completed-trend'] = new Chart(getChartContext('chart-aging-completed-trend'), {
         type: 'line',
-        data: {
-            labels: dates.map(d => d.slice(5)), 
-            datasets: [{
-                label: 'Avg Days in System (Completed)',
-                data: completedAvg,
-                borderColor: '#10b981', // Emerald
-                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                fill: true,
-                tension: 0.3
-            }]
-        },
+        data: { labels: dates.map(d => d.slice(5)), datasets: trendDatasets },
         options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
     });
 
-    // Chart 2: Snapshot Bar (Active)
+    // Render Chart 2: Snapshot Bar
     const activeAreas = [...appConfig.areas, ...(appConfig.postWipZones || [])];
     const activeAvg = activeAreas.map(a => activeCounts[a] > 0 ? Math.round(activeDaysSum[a] / activeCounts[a]) : 0);
 
@@ -3029,7 +3088,7 @@ window.renderAgingCharts = () => {
             datasets: [{
                 label: 'Avg Days in System (Active WIP)',
                 data: activeAvg,
-                backgroundColor: '#3b82f6', // Blue
+                backgroundColor: '#3b82f6',
                 borderRadius: 4
             }]
         },
@@ -3065,6 +3124,7 @@ const init = async () => {
 	
 
 init();
+
 
 
 
