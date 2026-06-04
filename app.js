@@ -1,25 +1,8 @@
 /* app.js */
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, updateDoc, query, where, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { initDB } from './db.js';
 
 // --- 1. CONFIGURATION & STATE ---
-const appId = 'final-2-tracker';
-const firebaseConfig = {
-    apiKey: "AIzaSyCngsxpFhGfDECSFEleMue7VXn5I80ZK3Q",
-    authDomain: "final-2-tracker.firebaseapp.com",
-    projectId: "final-2-tracker",
-    storageBucket: "final-2-tracker.firebasestorage.app",
-    messagingSenderId: "302346338582",
-    appId: "1:302346338582:web:e858525c35c27b0ee5d037",
-    measurementId: "G-B9M4FZSMY9"
-};
-const initialAuthToken = null;
-const COLLECTION_PATH = `artifacts/${appId}/public/data/car_tracker_vins`;
-const CONFIG_DOC_PATH = `artifacts/${appId}/public/data/app_config/main`; 
-
-// Default Config 
 const DEFAULT_AREAS = ["GT M600", "SUV M600", "CP6B", "Rattle", "Test", "Road Test", "CP7", "Monsoon", "Paint", "ECVF", "V900"];
 const DEFAULT_NWA = ["Car Park", "Repair Bay", "Offsite"];
 const DEFAULT_MODELS = ["Continental GT", "Flying Spur", "Bentayga", "Bacalar"];
@@ -32,17 +15,14 @@ let ukBankHolidays = [];
 
 // State
 let db;
-let auth;
-let userId = null;
+let userId = "LocalUser"; // Replaced Firebase Auth
 let allCars = [];
 let carsByArea = {};
-let carsByTemp = {}; // Map of NWA -> [cars] AND VisitorZone -> [cars] (if visitorHost logic used)
-let carsByPostWip = {}; // Map for Post WIP zones
+let carsByTemp = {}; 
+let carsByPostWip = {}; 
 let stats = { today: {}, week: {}, historyDaily: {}, historyWeekly: {} };
 let currentUserRole = null; 
 let managerViewMode = 'day';
-let selectedModelsFilter = null;
-let agingTrendViewMode = 'aggregate';
 let appConfig = { 
     areas: [...DEFAULT_AREAS], 
     routing: {...DEFAULT_ROUTING}, 
@@ -55,10 +35,11 @@ let appConfig = {
     postWipZones: [],
     maxWip: {},
     passwords: { "Admin": "f2trackeradmin" },
-    shutdownPeriods: [] // NEW: Aging car exclusion periods
+    shutdownPeriods: [] 
 };
 
 // --- 2. DOM ELEMENTS ---
+// (Your existing DOM selections remain identical)
 const navAging = document.getElementById('nav-aging');
 const viewAging = document.getElementById('view-aging');
 const loginScreen = document.getElementById('login-screen');
@@ -69,7 +50,6 @@ const userRoleDisplay = document.getElementById('user-role-display');
 const navDashboard = document.getElementById('nav-dashboard');
 const navTrack = document.getElementById('nav-track');
 const navSettings = document.getElementById('nav-settings');
-
 const areaSelect = document.getElementById('area-select');
 const vinInput = document.getElementById('vin-input');
 const scanButton = document.getElementById('scan-button');
@@ -92,8 +72,6 @@ const analyticsReworkStart = document.getElementById('analytics-rework-start');
 const analyticsReworkEnd = document.getElementById('analytics-rework-end');
 const analyticsTrendStart = document.getElementById('analytics-trend-start');
 const analyticsTrendEnd = document.getElementById('analytics-trend-end');
-
-// Metrics
 const metricsTitle = document.getElementById('metrics-title');
 const managerToggleContainer = document.getElementById('manager-toggle-container');
 const zoneThroughputDisplay = document.getElementById('zone-throughput-display');
@@ -111,9 +89,6 @@ const wipSummaryGrid = document.getElementById('wip-summary-grid');
 const postWipSummaryGrid = document.getElementById('post-wip-summary-grid');
 const postWipBoardContainer = document.getElementById('post-wip-board-container');
 const postWipPots = document.getElementById('post-wip-pots');
-
-
-// Settings Elements
 const newAreaNameInput = document.getElementById('new-area-name');
 const newNWANameInput = document.getElementById('new-nwa-name');
 const newPostWipNameInput = document.getElementById('new-postwip-name');
@@ -122,8 +97,6 @@ const routingEditorContainer = document.getElementById('routing-editor-container
 const nwaEditorContainer = document.getElementById('nwa-editor-container');
 const postWipEditorContainer = document.getElementById('postwip-editor-container');
 const modelEditorContainer = document.getElementById('model-editor-container');
-
-// Modals
 const confirmModal = document.getElementById('confirm-modal');
 const confirmVin = document.getElementById('confirm-vin');
 const confirmTarget = document.getElementById('confirm-target-select'); 
@@ -132,7 +105,6 @@ const confirmNva = document.getElementById('confirm-nva');
 const confirmComment = document.getElementById('confirm-comment');
 const btnConfirmMove = document.getElementById('btn-confirm-move');
 const moveModalTitle = document.getElementById('move-modal-title');
-
 const areaDetailsModal = document.getElementById('area-details-modal');
 const areaModalTitle = document.getElementById('area-modal-title');
 const areaModalContent = document.getElementById('area-modal-content');
@@ -159,15 +131,67 @@ const postWipListTitle = document.getElementById('post-wip-list-title');
 const postWipListContent = document.getElementById('post-wip-list-content');
 const postWipListSearch = document.getElementById('post-wip-list-search');
 
+// --- 3. SQLITE SYNC & CONFIGURATION LOGIC ---
 
-// --- 3. CONFIGURATION LOGIC ---
+// Replaces Firebase onSnapshot. Re-queries SQLite and feeds the UI processor.
+const fetchAllCars = () => {
+    const carsData = [];
+    
+    db.exec({
+        sql: 'SELECT * FROM cars',
+        rowMode: 'object',
+        callback: (carRow) => {
+            const car = { ...carRow };
+            car.lastUpdated = new Date(car.lastUpdated);
+            
+            // Rebuild nested tempData object
+            car.tempData = {
+                va: car.temp_va || 0,
+                nva: car.temp_nva || 0,
+                comment: car.temp_comment || '',
+                status: car.temp_status || '',
+                statuses: car.temp_tags ? JSON.parse(car.temp_tags) : []
+            };
+            
+            car.history = [];
+            db.exec({
+                sql: 'SELECT * FROM car_history WHERE vin = ? ORDER BY timestamp ASC',
+                bind: [car.vin],
+                rowMode: 'object',
+                callback: (hRow) => {
+                    const h = { ...hRow };
+                    h.timestamp = new Date(h.timestamp);
+                    if (h.metrics_va !== null || h.metrics_comment !== null || h.metrics_tags !== null) {
+                        h.metrics = {
+                            va: h.metrics_va || 0,
+                            nva: h.metrics_nva || 0,
+                            comment: h.metrics_comment || '',
+                            status: h.metrics_status || '',
+                            tags: h.metrics_tags ? JSON.parse(h.metrics_tags) : []
+                        };
+                    }
+                    if (h.from_location) h.from = h.from_location;
+                    car.history.push(h);
+                }
+            });
+            carsData.push(car);
+        }
+    });
+
+    processSnapshotData(carsData);
+};
 
 const loadConfiguration = async () => {
     try {
-        const configRef = doc(db, CONFIG_DOC_PATH);
-        const docSnap = await getDoc(configRef);
-        if (docSnap.exists()) {
-            const saved = docSnap.data();
+        let saved = null;
+        db.exec({
+            sql: 'SELECT config_data FROM app_config WHERE id = ?',
+            bind: ['main'],
+            rowMode: 'object',
+            callback: (row) => { saved = JSON.parse(row.config_data); }
+        });
+
+        if (saved) {
             appConfig = { 
                 ...appConfig, 
                 ...saved,
@@ -177,22 +201,22 @@ const loadConfiguration = async () => {
                 postWipZones: saved.postWipZones || [],
                 maxWip: saved.maxWip || {},
                 passwords: saved.passwords || { "Admin": "f2trackeradmin" },
-		shutdownPeriods: saved.shutdownPeriods || []
+                shutdownPeriods: saved.shutdownPeriods || []
             };
         } else {
-            await setDoc(configRef, appConfig);
+            db.exec({
+                sql: 'INSERT INTO app_config (id, config_data) VALUES (?, ?)',
+                bind: ['main', JSON.stringify(appConfig)]
+            });
         }
+        
         populateLoginSelect();
         if(currentUserRole && !document.getElementById('view-settings').classList.contains('hidden')) {
             renderSettings();
         }
         if(currentUserRole) {
-            // Re-render views if role is active
-            if (currentUserRole === 'PostWIPManager') {
-                renderPostWipDashboard();
-            } else {
-                renderWIPBoard();
-            }
+            if (currentUserRole === 'PostWIPManager') renderPostWipDashboard();
+            else renderWIPBoard();
             renderThroughputMetrics();
             renderNonWorkingAreas();
             checkAddPermission();
@@ -205,8 +229,10 @@ const loadConfiguration = async () => {
 
 window.saveConfiguration = async () => {
     try {
-        const configRef = doc(db, CONFIG_DOC_PATH);
-        await updateDoc(configRef, appConfig);
+        db.exec({
+            sql: 'UPDATE app_config SET config_data = ? WHERE id = ?',
+            bind: [JSON.stringify(appConfig), 'main']
+        });
         alert("Settings saved successfully!");
         loadConfiguration(); 
     } catch (e) {
@@ -215,8 +241,9 @@ window.saveConfiguration = async () => {
     }
 };
 
-// --- 4. SETTINGS UI LOGIC ---
 
+// --- 4. SETTINGS UI LOGIC ---
+// (These functions modify the local `appConfig` object, then we call saveConfiguration)
 window.addShutdownPeriod = () => {
     const name = document.getElementById('shutdown-name').value.trim();
     const start = document.getElementById('shutdown-start').value;
@@ -365,7 +392,6 @@ window.togglePostWipEnable = (area) => {
      renderSettings();
 };
 
-// Status Configuration
 window.addStatus = (area) => {
     const input = document.getElementById(`new-status-${area}`);
     const val = input.value.trim();
@@ -392,14 +418,12 @@ window.updateMaxWip = (area, value) => {
 
 window.updatePassword = (role, value) => {
     if (!appConfig.passwords) appConfig.passwords = {};
-    if (value.trim() === '') {
-        delete appConfig.passwords[role]; // Remove password if blank
-    } else {
-        appConfig.passwords[role] = value.trim();
-    }
+    if (value.trim() === '') delete appConfig.passwords[role]; 
+    else appConfig.passwords[role] = value.trim();
 };
 
 window.renderSettings = () => {
+    // (Your existing renderSettings DOM generation remains exactly the same)
     routingEditorContainer.innerHTML = '';
     appConfig.areas.forEach((area, index) => {
         const routes = appConfig.routing[area] || [];
@@ -408,12 +432,10 @@ window.renderSettings = () => {
         const canAdd = (appConfig.allowedAddZones || []).includes(area);
         const postWipEnabled = (appConfig.postWipEnabledZones || []).includes(area);
         
-        // Tags
         const routeTags = routes.map(dest => `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-800 mr-2">${dest}<button onclick="removeRoute('${area}', '${dest}')" class="ml-1 text-blue-600 font-bold">×</button></span>`).join('');
         const tempTags = tempRoutes.map(dest => `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-800 mr-2">${dest}<button onclick="removeTempRoute('${area}', '${dest}')" class="ml-1 text-yellow-600 font-bold">×</button></span>`).join('');
         const statusTags = statuses.map(s => `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 mr-2">${s}<button onclick="removeStatus('${area}', '${s}')" class="ml-1 text-green-600 font-bold">×</button></span>`).join('');
 
-        // Options
         const routeOptions = `<option value="">+ Push To...</option>` + appConfig.areas.filter(a => a !== area && !routes.includes(a)).map(a => `<option value="${a}">${a}</option>`).join('');
         const allLocs = [...appConfig.areas, ...appConfig.nonWorkingAreas];
         const tempOptions = `<option value="">+ Temp Loc...</option>` + allLocs.filter(a => a !== area && !tempRoutes.includes(a)).map(a => `<option value="${a}">${a}</option>`).join('');
@@ -456,13 +478,11 @@ window.renderSettings = () => {
                     <div class="flex flex-wrap gap-1 mb-1 min-h-[20px]">${routeTags}</div>
                     <select onchange="updateRouting('${area}', this)" class="w-full text-xs border p-1 rounded">${routeOptions}</select>
                 </div>
-                
                 <div>
                     <label class="text-xs font-bold text-gray-500 block mb-1">Temp Locations</label>
                     <div class="flex flex-wrap gap-1 mb-1 min-h-[20px]">${tempTags}</div>
                     <select onchange="updateTempRoute('${area}', this)" class="w-full text-xs border p-1 rounded">${tempOptions}</select>
                 </div>
-
                 <div>
                     <label class="text-xs font-bold text-gray-500 block mb-1">Strict Statuses</label>
                     <div class="flex flex-wrap gap-1 mb-1 min-h-[20px]">${statusTags}</div>
@@ -503,7 +523,7 @@ window.renderSettings = () => {
         </div>
     `).join('');
 
-const allRoles = ['Admin', 'Manager', 'PostWIPManager', ...appConfig.areas];
+    const allRoles = ['Admin', 'Manager', 'PostWIPManager', ...appConfig.areas];
     const pwdContainer = document.getElementById('passwords-editor-container');
     if(pwdContainer) {
         pwdContainer.innerHTML = allRoles.map(r => `
@@ -514,7 +534,7 @@ const allRoles = ['Admin', 'Manager', 'PostWIPManager', ...appConfig.areas];
         `).join('');
     }
 
-const shutdownContainer = document.getElementById('shutdown-editor-container');
+    const shutdownContainer = document.getElementById('shutdown-editor-container');
     if(shutdownContainer) {
         shutdownContainer.innerHTML = (appConfig.shutdownPeriods || []).map((p, idx) => `
             <div class="flex justify-between p-3 bg-white border border-gray-200 rounded items-center shadow-sm">
@@ -527,7 +547,6 @@ const shutdownContainer = document.getElementById('shutdown-editor-container');
         `).join('');
     }
 
-    // --- NEW: POPULATE AUTO-FETCHED BANK HOLIDAYS ---
     const holidaysContainer = document.getElementById('bank-holidays-container');
     if(holidaysContainer) {
         if (ukBankHolidays && ukBankHolidays.length > 0) {
@@ -542,32 +561,29 @@ const shutdownContainer = document.getElementById('shutdown-editor-container');
     }
 };
 
-// --- 5. APP LOGIC (Updated to use appConfig) ---
+// --- 5. APP LOGIC ---
 
 const fetchUKBankHolidays = async () => {
     try {
         const response = await fetch('https://www.gov.uk/bank-holidays.json');
         if (response.ok) {
             const data = await response.json();
-            // Pull dates specifically for England and Wales (Crewe)
             ukBankHolidays = data['england-and-wales'].events.map(event => event.date);
         }
     } catch (error) {
-        console.warn("Failed to fetch UK Bank Holidays from gov.uk. Aging calculation will only exclude weekends/shutdowns.");
+        console.warn("Failed to fetch UK Bank Holidays from gov.uk.");
     }
 };
 
 window.getAgingDetails = (car) => {
     if(!car.history || car.history.length === 0) return { status: 'normal', days: 0 };
     
-    // Sort history to find true creation date
-    const sortedHistory = [...car.history].sort((a,b) => (a.timestamp.toDate ? a.timestamp.toDate() : new Date(a.timestamp)) - (b.timestamp.toDate ? b.timestamp.toDate() : new Date(b.timestamp)));
-    const createdDate = sortedHistory[0].timestamp.toDate ? sortedHistory[0].timestamp.toDate() : new Date(sortedHistory[0].timestamp);
+    const sortedHistory = [...car.history].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const createdDate = new Date(sortedHistory[0].timestamp);
     
-    // If finished, stop aging at completion date. Otherwise use today.
     let endDate = new Date();
     if(car.status === 'Finished') {
-        endDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
+        endDate = new Date(car.lastUpdated);
     }
     
     let current = new Date(createdDate);
@@ -576,7 +592,7 @@ window.getAgingDetails = (car) => {
     end.setHours(0,0,0,0);
     
     let workingDays = 0;
-    let safetyCounter = 0; // Prevent bad date infinite loops
+    let safetyCounter = 0; 
     
     while(current < end && safetyCounter < 5000) {
         safetyCounter++;
@@ -625,31 +641,29 @@ const formatDateReadable = (isoDate) => {
     const d = new Date(isoDate);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', weekday: 'short' });
 };
-const formatTimestamp = (ts) => ts ? new Date(ts.toDate ? ts.toDate() : ts).toLocaleString('en-US', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'N/A';
-const formatTimestampFull = (ts) => ts ? new Date(ts.toDate ? ts.toDate() : ts).toLocaleString('en-US', {weekday:'short',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'N/A';
+
+// Modified formatting functions to accept standard Date objects
+const formatTimestamp = (ts) => ts ? new Date(ts).toLocaleString('en-US', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'N/A';
+const formatTimestampFull = (ts) => ts ? new Date(ts).toLocaleString('en-US', {weekday:'short',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'N/A';
 
 const processSnapshotData = (snapshotDocs) => {
-    // Restore functionality by filtering ALL documents here
-    allCars = snapshotDocs.map(doc => doc.data());
+    allCars = snapshotDocs;
     carsByArea = {}; carsByTemp = {}; carsByPostWip = {};
     stats = { today: {}, week: {}, historyDaily: {}, historyWeekly: {} };
     const { today, weekStart } = getDates();
 
     allCars.forEach(car => {
-        // Logic 1: Official Location
         if (car.status === 'WIP') {
             if (!carsByArea[car.currentArea]) carsByArea[car.currentArea] = [];
             carsByArea[car.currentArea].push(car);
         }
         
-        // Logic 2: Post-WIP
         if (car.status === 'Post-WIP') {
-            const zone = car.currentArea; // In Post-WIP, currentArea is the Post WIP Zone name
+            const zone = car.currentArea; 
             if(!carsByPostWip[zone]) carsByPostWip[zone] = [];
             carsByPostWip[zone].push(car);
         }
         
-        // Logic 3: Temp Location
         if (car.tempLocation) {
              if(!carsByTemp[car.tempLocation]) carsByTemp[car.tempLocation] = [];
              carsByTemp[car.tempLocation].push(car);
@@ -662,11 +676,10 @@ const processSnapshotData = (snapshotDocs) => {
              }
         }
 
-        // Logic 4: History Stats
         if (car.history) {
             car.history.forEach(h => {
                 if (h.status === 'Finished') {
-                    const date = h.timestamp.toDate ? h.timestamp.toDate() : new Date(h.timestamp);
+                    const date = new Date(h.timestamp);
                     const dateStr = date.toISOString().split('T')[0];
                     const d = new Date(date);
                     const dayNum = d.getDay();
@@ -685,6 +698,7 @@ const processSnapshotData = (snapshotDocs) => {
             });
         }
     });
+    
     if (currentUserRole) {
         if (currentUserRole === 'PostWIPManager') {
             renderPostWipDashboard();
@@ -719,16 +733,14 @@ window.handleLogin = () => {
     const pwdInput = document.getElementById('login-password');
     const enteredPwd = pwdInput.value;
     
-    // Check if the selected role has a password set
     const requiredPwd = (appConfig.passwords && appConfig.passwords[role]) ? appConfig.passwords[role] : null;
     
     if (requiredPwd && enteredPwd !== requiredPwd) {
         alert(`Incorrect password for ${role}.`);
-        return; // Stop login
+        return;
     }
     
-    pwdInput.value = ''; // Clear password field for security
-    
+    pwdInput.value = ''; 
     currentUserRole = role;
     loginScreen.classList.add('hidden');
     mainApp.classList.remove('hidden');
@@ -747,7 +759,7 @@ window.handleLogin = () => {
         userRoleDisplay.textContent = 'Post-WIP Manager';
         userRoleDisplay.className = "px-3 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold uppercase tracking-wide";
         navSettings.classList.add('hidden');
-        switchView('dashboard'); // Reuse dashboard container but render different content
+        switchView('dashboard');
     } else {
         userRoleDisplay.textContent = `${currentUserRole} Zone`;
         userRoleDisplay.className = "px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold uppercase tracking-wide";
@@ -756,12 +768,8 @@ window.handleLogin = () => {
     }
     
     checkAddPermission();
-    // Initial render based on role
-    if (currentUserRole === 'PostWIPManager') {
-        renderPostWipDashboard();
-    } else {
-        renderWIPBoard();
-    }
+    if (currentUserRole === 'PostWIPManager') renderPostWipDashboard();
+    else renderWIPBoard();
     renderThroughputMetrics();
     renderNonWorkingAreas();
 };
@@ -775,12 +783,8 @@ window.handleLogout = () => {
 
 const checkAddPermission = () => {
     const hasPermission = currentUserRole === 'Admin' || currentUserRole === 'Manager' || (appConfig.allowedAddZones && appConfig.allowedAddZones.includes(currentUserRole));
-    
-    if (hasPermission) {
-        addCarSection.classList.remove('hidden');
-    } else {
-        addCarSection.classList.add('hidden');
-    }
+    if (hasPermission) addCarSection.classList.remove('hidden');
+    else addCarSection.classList.add('hidden');
 };
 
 window.setManagerView = (mode) => {
@@ -797,33 +801,6 @@ window.setManagerView = (mode) => {
     renderThroughputMetrics();
 };
 
-window.setAgingTrendView = (mode) => {
-    agingTrendViewMode = mode;
-    const btnAgg = document.getElementById('btn-aging-agg');
-    const btnSplit = document.getElementById('btn-aging-split');
-    if (mode === 'aggregate') {
-        btnAgg.className = "px-3 py-1.5 rounded bg-white text-indigo-600 shadow-sm transition";
-        btnSplit.className = "px-3 py-1.5 rounded text-gray-500 hover:text-gray-700 transition";
-    } else {
-        btnSplit.className = "px-3 py-1.5 rounded bg-white text-indigo-600 shadow-sm transition";
-        btnAgg.className = "px-3 py-1.5 rounded text-gray-500 hover:text-gray-700 transition";
-    }
-    if (window.renderAgingCharts) window.renderAgingCharts();
-};
-
-// NEW: Toggle filter state and force re-render
-window.toggleThroughputModelFilter = (model) => {
-    if (selectedModelsFilter.includes(model)) {
-        selectedModelsFilter = selectedModelsFilter.filter(m => m !== model);
-    } else {
-        selectedModelsFilter.push(model);
-    }
-    // Prevent deselecting everything (force at least one model to be viewed)
-    if (selectedModelsFilter.length === 0) selectedModelsFilter = [model];
-    
-    renderThroughputMetrics();
-};
-
 const renderThroughputMetrics = () => {
     if (currentUserRole === 'Manager' || currentUserRole === 'Admin') {
         managerToggleContainer.classList.remove('hidden');
@@ -833,165 +810,15 @@ const renderThroughputMetrics = () => {
         managerThroughputDisplay.classList.remove('hidden');
         metricsTitle.textContent = "Facility Throughput";
 
-        // --- 1. RENDER MODEL FILTERS ---
-        const allModels = [...(appConfig.models || []), 'Unknown'];
-        if (!selectedModelsFilter) selectedModelsFilter = [...allModels]; // Default select all
-
-        const filterContainer = document.getElementById('throughput-model-filters');
-        if (filterContainer) {
-            filterContainer.innerHTML = allModels.map(m => `
-                <label class="inline-flex items-center cursor-pointer bg-white px-3 py-1.5 rounded border ${selectedModelsFilter.includes(m) ? 'border-indigo-500 ring-1 ring-indigo-500 bg-indigo-50/30' : 'border-gray-200 hover:bg-gray-50'} transition">
-                    <input type="checkbox" class="hidden" onchange="toggleThroughputModelFilter('${m}')" ${selectedModelsFilter.includes(m) ? 'checked' : ''}>
-                    <div class="w-4 h-4 rounded border ${selectedModelsFilter.includes(m) ? 'bg-indigo-600 border-indigo-600 flex justify-center items-center' : 'bg-white border-gray-300'} mr-2">
-                        ${selectedModelsFilter.includes(m) ? '<svg class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
-                    </div>
-                    <span class="text-sm font-bold text-gray-700 truncate max-w-[120px]">${m}</span>
-                </label>
-            `).join('');
-        }
-
-        // --- 2. DYNAMICALLY RECALCULATE METRICS WITH FILTER ---
-        const { today, weekStart } = getDates();
-        let filteredToday = {};
-        let filteredWeek = {};
-        let filteredHistDaily = {};
-        let filteredHistWeekly = {};
-        let completedTotal = 0;
-        let completedByModel = {};
-
-        allCars.forEach(car => {
-            const carModel = car.model || 'Unknown';
-            if (!selectedModelsFilter.includes(carModel)) return; // Skip if model is unselected
-
-            // Throughput History Tracking
-            if (car.history) {
-                car.history.forEach(h => {
-                    if (h.status === 'Finished') {
-                        const date = h.timestamp.toDate ? h.timestamp.toDate() : new Date(h.timestamp);
-                        const dateStr = date.toISOString().split('T')[0];
-                        const d = new Date(date);
-                        const dayNum = d.getDay();
-                        const diff = d.getDate() - dayNum;
-                        const ws = new Date(d.setDate(diff));
-                        const weekKey = `${ws.getFullYear()}-W${Math.ceil((((ws - new Date(ws.getFullYear(),0,1))/86400000)+1)/7)}`;
-                        const area = h.area;
-
-                        if (!filteredHistDaily[dateStr]) filteredHistDaily[dateStr] = {};
-                        filteredHistDaily[dateStr][area] = (filteredHistDaily[dateStr][area] || 0) + 1;
-                        
-                        if (!filteredHistWeekly[weekKey]) filteredHistWeekly[weekKey] = {};
-                        filteredHistWeekly[weekKey][area] = (filteredHistWeekly[weekKey][area] || 0) + 1;
-                        
-                        if (dateStr === today) filteredToday[area] = (filteredToday[area] || 0) + 1;
-                        if (date >= weekStart) filteredWeek[area] = (filteredWeek[area] || 0) + 1;
-                    }
-                });
-            }
-
-            // System Completed (Fully Finished off the dashboard) Tracking
-            if (car.status === 'Finished') {
-                const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
-                const finishDateStr = finishDate.toISOString().split('T')[0];
-                
-                let isCompletedInPeriod = false;
-                if (managerViewMode === 'day' && finishDateStr === today) isCompletedInPeriod = true;
-                if (managerViewMode === 'week' && finishDate >= weekStart) isCompletedInPeriod = true;
-
-                if (isCompletedInPeriod) {
-                    completedTotal++;
-                    completedByModel[carModel] = (completedByModel[carModel] || 0) + 1;
-                }
-            }
-        });
-
-        // --- 3. RENDER LIVE TODAY THROUGHPUT ---
         throughputMetricsGrid.innerHTML = '';
-        const currentDataPool = managerViewMode === 'day' ? filteredToday : filteredWeek;
         appConfig.areas.forEach(area => {
-            const count = currentDataPool[area] || 0;
+            const count = stats.today[area] || 0;
             const card = document.createElement('div');
             card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center';
             card.innerHTML = `<p class="text-[10px] font-bold text-gray-400 uppercase truncate" title="${area}">${area}</p><p class="text-2xl font-bold text-indigo-600">${count}</p>`;
             throughputMetricsGrid.appendChild(card);
         });
 
-        // --- 4. RENDER COMPLETED VEHICLES SECTION ---
-        const completedTitlePeriod = document.getElementById('completed-title-period');
-        if (completedTitlePeriod) {
-            completedTitlePeriod.textContent = managerViewMode === 'day' ? 'Completed Vehicles (Today)' : 'Completed Vehicles (This Week)';
-        }
-
-        const completedMetricsGrid = document.getElementById('completed-metrics-grid');
-        if (completedMetricsGrid) {
-            completedMetricsGrid.innerHTML = '';
-            
-            // Total Box
-            const totalCard = document.createElement('div');
-            totalCard.className = 'bg-green-50 p-3 rounded-lg border border-green-200 text-center shadow-sm';
-            totalCard.innerHTML = `<p class="text-[10px] font-bold text-green-600 uppercase truncate">Total Finished</p><p class="text-2xl font-bold text-green-700">${completedTotal}</p>`;
-            completedMetricsGrid.appendChild(totalCard);
-
-            // Print Individual Models (Only for actively selected models in the filter)
-			selectedModelsFilter.forEach(m => {
-                const count = completedByModel[m] || 0;
-                const card = document.createElement('div');
-                card.className = 'bg-gray-50 p-3 rounded-lg border border-gray-200 text-center shadow-sm';
-                card.innerHTML = `<p class="text-[10px] font-bold text-gray-500 uppercase truncate" title="${m}">${m}</p><p class="text-2xl font-bold text-gray-700">${count}</p>`;
-                completedMetricsGrid.appendChild(card);
-            });
-        }
-
-        // --- NEW: RENDER AVG TIME IN SYSTEM ---
-        let activeCount = 0; let activeDaysSum = 0;
-        let compCount = 0; let compDaysSum = 0;
-        
-        allCars.forEach(car => {
-            const carModel = car.model || 'Unknown';
-            if (!selectedModelsFilter.includes(carModel)) return;
-            
-            const aging = getAgingDetails(car);
-            
-            if (car.status !== 'Finished') {
-                activeCount++;
-                activeDaysSum += aging.days;
-            } else {
-                const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
-                const finishDateStr = finishDate.toISOString().split('T')[0];
-                let isCompletedInPeriod = false;
-                if (managerViewMode === 'day' && finishDateStr === today) isCompletedInPeriod = true;
-                if (managerViewMode === 'week' && finishDate >= weekStart) isCompletedInPeriod = true;
-                
-                if (isCompletedInPeriod) {
-                    compCount++;
-                    compDaysSum += aging.days;
-                }
-            }
-        });
-        
-        const avgActive = activeCount > 0 ? Math.round(activeDaysSum / activeCount) : 0;
-        const avgComp = compCount > 0 ? Math.round(compDaysSum / compCount) : 0;
-        
-        const avgTimeContainer = document.getElementById('avg-system-time-container');
-        if (avgTimeContainer) {
-            avgTimeContainer.innerHTML = `
-                <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3 mt-6">Average Time in System (Working Days)</h3>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-                    <div class="bg-indigo-50 p-3 rounded-lg border border-indigo-200 text-center shadow-sm">
-                        <p class="text-[10px] font-bold text-indigo-600 uppercase truncate">Active Vehicles</p>
-                        <p class="text-2xl font-bold text-indigo-700">${avgActive} <span class="text-xs font-normal text-indigo-500">days</span></p>
-                    </div>
-                    <div class="bg-green-50 p-3 rounded-lg border border-green-200 text-center shadow-sm">
-                        <p class="text-[10px] font-bold text-green-600 uppercase truncate">Completed Vehicles</p>
-                        <p class="text-2xl font-bold text-green-700">${avgComp} <span class="text-xs font-normal text-green-500">days</span></p>
-                    </div>
-                </div>
-            `;
-        }
-        // --------------------------------------
-
-        // --- 5. RENDER HISTORY TABLE ---
-
-        // --- 5. RENDER HISTORY TABLE ---
         historyTableTitle.textContent = managerViewMode === 'day' ? 'Daily History (Last 14 Days)' : 'Weekly History';
         historyTableHeader.innerHTML = '<th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider sticky left-0 bg-gray-50 z-10">Period</th>';
         appConfig.areas.forEach(area => {
@@ -1002,12 +829,12 @@ const renderThroughputMetrics = () => {
         });
 
         historyTableBody.innerHTML = '';
-        const historyPool = managerViewMode === 'day' ? filteredHistDaily : filteredHistWeekly;
-        const sortedKeys = Object.keys(historyPool).sort().reverse();
+        const dataPool = managerViewMode === 'day' ? stats.historyDaily : stats.historyWeekly;
+        const sortedKeys = Object.keys(dataPool).sort().reverse();
         const limit = managerViewMode === 'day' ? 14 : 8;
         
         sortedKeys.slice(0, limit).forEach(key => {
-            const rowData = historyPool[key];
+            const rowData = dataPool[key];
             const tr = document.createElement('tr');
             const tdLabel = document.createElement('td');
             tdLabel.className = "px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 bg-white border-r text-center";
@@ -1024,9 +851,6 @@ const renderThroughputMetrics = () => {
             historyTableBody.appendChild(tr);
         });
 
-        // NEW: Populate "Live Inventory Counts" for Manager
-
-        // NEW: Populate "Live Inventory Counts" for Manager
         wipSummaryGrid.innerHTML = '';
         appConfig.areas.forEach(area => {
              const count = (carsByArea[area] || []).length;
@@ -1036,26 +860,22 @@ const renderThroughputMetrics = () => {
              wipSummaryGrid.appendChild(card);
         });
 
-	// NEW: Render Post-WIP Metrics in Manager View
         postWipSummaryGrid.innerHTML = '';
         if (appConfig.postWipZones && appConfig.postWipZones.length > 0) {
              appConfig.postWipZones.forEach(zone => {
                  const count = (carsByPostWip[zone] || []).length;
                  const card = document.createElement('div');
-                 // Changed to Emerald
                  card.className = 'bg-emerald-50 p-3 rounded-lg border border-emerald-200 text-center';
                  card.innerHTML = `<p class="text-[10px] font-bold text-emerald-600 uppercase truncate" title="${zone}">${zone}</p><p class="text-2xl font-bold text-emerald-700">${count}</p>`;
                  postWipSummaryGrid.appendChild(card);
              });
              
-             // Also render Post-WIP POTS (Detailed Cards) inside specific inner div
              const potsContainer = document.getElementById('post-wip-pots');
              potsContainer.innerHTML = '';
              
              appConfig.postWipZones.forEach(zone => {
                  const cars = carsByPostWip[zone] || [];
                  const card = document.createElement('div');
-                 // Changed to Emerald
                  card.className = `bg-white rounded-xl shadow-lg p-4 border-t-8 border-emerald-500 flex flex-col h-full cursor-pointer hover:shadow-xl transition transform hover:-translate-y-1 relative group`;
                  card.onclick = () => openPostWipZoneList(zone);
 
@@ -1069,7 +889,6 @@ const renderThroughputMetrics = () => {
                             const aging = getAgingDetails(c);
                             const styles = getAgingStyles(aging.status);
                             let chipClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
-                            // Override emerald with aging styles if applicable
                             if(aging.status !== 'normal') chipClass = `${styles.bg} ${styles.text} ${styles.border} shadow-sm`;
                             return `<span class="inline-block px-2 py-1 text-xs font-mono font-bold ${chipClass} rounded border">${c.vin}${c.model ? ' <span class="text-[9px] text-gray-500 font-sans">'+c.model+'</span>' : ''}</span>`;
                         }).join('')}
@@ -1084,22 +903,16 @@ const renderThroughputMetrics = () => {
              document.getElementById('post-wip-pots').innerHTML = '';
         }
         
-        // Hide specific PostWIP Manager dashboard table
         postWipDashboard.classList.add('hidden');
-
-        // Ensure sections are visible
         document.getElementById('metrics-container').classList.remove('hidden');
         document.getElementById('manager-inventory-counts').classList.remove('hidden'); 
         document.getElementById('post-wip-board-container').classList.remove('hidden'); 
 
     } else if (currentUserRole === 'PostWIPManager') {
-         // Hide standard metrics container completely for Post WIP Manager
          document.getElementById('metrics-container').classList.add('hidden');
          document.getElementById('manager-inventory-counts').classList.add('hidden');
          document.getElementById('post-wip-board-container').classList.add('hidden');
-         
     } else {
-        // Zone User Logic
         managerToggleContainer.classList.remove('flex');
         managerToggleContainer.classList.add('hidden');
         managerThroughputDisplay.classList.add('hidden');
@@ -1108,22 +921,17 @@ const renderThroughputMetrics = () => {
         metricsTitle.textContent = `${currentUserRole} Performance`;
         zoneMetricToday.textContent = stats.today[currentUserRole] || 0;
         zoneMetricWeek.textContent = stats.week[currentUserRole] || 0;
-        // Ensure metrics container is visible for Zone User
         document.getElementById('metrics-container').classList.remove('hidden');
         document.getElementById('manager-inventory-counts').classList.add('hidden');
         document.getElementById('post-wip-board-container').classList.add('hidden');
-        document.getElementById('post-wip-dashboard').classList.add('hidden'); // FIX: Actively hide this view
+        document.getElementById('post-wip-dashboard').classList.add('hidden'); 
     }
 };
 
-// NEW: Render Post WIP Dashboard Logic (Tabular Layout)
 window.renderPostWipDashboard = () => {
-     // Hide standard WIP container
      wipContainer.classList.add('hidden');
      wipTitle.classList.add('hidden');
      nonWorkingContainer.classList.add('hidden');
-     
-     // Show Post WIP specific container
      postWipDashboard.classList.remove('hidden');
      postWipCounts.innerHTML = '';
 
@@ -1131,7 +939,6 @@ window.renderPostWipDashboard = () => {
          const cars = carsByPostWip[zone] || [];
          const tableContainer = document.createElement('div');
          
-         // Using the Emerald Green theme for Post-WIP
          tableContainer.className = `bg-white rounded-xl shadow-lg border-t-8 border-emerald-500 overflow-hidden mb-8`;
 
          let tableHtml = `
@@ -1152,10 +959,9 @@ window.renderPostWipDashboard = () => {
              tableHtml += `<tr><td colspan="5" class="px-6 py-8 text-center text-gray-400 italic">No vehicles currently in ${zone}</td></tr>`;
          } else {
              cars.forEach(car => {
-                 // Calculate duration
                  let durationStr = '--';
                  if (car.lastUpdated) {
-                     const lastUpdDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
+                     const lastUpdDate = new Date(car.lastUpdated);
                      const diffMs = new Date() - lastUpdDate;
                      const diffHrs = Math.floor(diffMs / 3600000);
                      const diffMins = Math.round((diffMs % 3600000) / 60000);
@@ -1163,13 +969,10 @@ window.renderPostWipDashboard = () => {
                  }
 
                  const draft = car.tempData || {};
-
-                 // --- NEW: CALCULATE AGING FOR POST-WIP TABLE ---
                  const aging = getAgingDetails(car);
                  const styles = getAgingStyles(aging.status);
                  let rowClass = aging.status !== 'normal' ? styles.tableRow : "hover:bg-gray-50";
                  let agingIndicator = aging.status !== 'normal' ? `<span class="block text-[9px] font-bold ${styles.text} bg-white border ${styles.border} px-1.5 py-0.5 rounded uppercase mt-1.5 tracking-wide shadow-sm w-max mx-auto">${styles.badgeText} (${aging.days}d)		 </span>` : '';
-                 // -----------------------------------------------
 
                  tableHtml += `
                     <tr class="${rowClass} transition">
@@ -1214,10 +1017,9 @@ window.openPostWipZoneList = (zone) => {
          content.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-400 italic">No cars in this zone.</td></tr>';
      } else {
          cars.forEach(car => {
-             // Calculate duration
              let durationStr = '--';
              if (car.lastUpdated) {
-                 const diffMs = new Date() - car.lastUpdated.toDate();
+                 const diffMs = new Date() - new Date(car.lastUpdated);
                  const diffHrs = Math.floor(diffMs / 3600000);
                  const diffMins = Math.round((diffMs % 3600000) / 60000);
                  durationStr = `${diffHrs}h ${diffMins}m`;
@@ -1266,7 +1068,6 @@ window.filterPostWipList = () => {
     }
 };
 
-
 window.showZoneThroughputList = (period) => {
     const { today, weekStart } = getDates();
     const listData = [];
@@ -1274,7 +1075,7 @@ window.showZoneThroughputList = (period) => {
         if (car.history) {
             car.history.forEach(h => {
                 if (h.area === currentUserRole && h.status === 'Finished') {
-                    const date = h.timestamp.toDate ? h.timestamp.toDate() : new Date(h.timestamp);
+                    const date = new Date(h.timestamp);
                     const dateStr = date.toISOString().split('T')[0];
                     let match = false;
                     if (period === 'today' && dateStr === today) match = true;
@@ -1325,104 +1126,57 @@ window.renderNonWorkingAreas = () => {
      appConfig.nonWorkingAreas.forEach(nwa => {
          const cars = carsByTemp[nwa] || [];
          const div = document.createElement('div');
+         div.className = "bg-gray-100 p-4 rounded-xl border border-gray-200 hover:shadow-lg transition";
          
-         // Style similar to WIP pots but distinct gray border
-         div.className = "bg-white rounded-xl shadow-lg p-4 border-t-8 border-gray-400 flex flex-col h-full cursor-pointer hover:shadow-xl transition transform hover:-translate-y-1 relative group";
-         div.onclick = () => openNWAModal(nwa);
+         let content = `<h4 class="font-bold text-gray-700 border-b pb-2 mb-3 flex justify-between items-center">
+            ${nwa} <span class="bg-gray-200 text-gray-600 py-1 px-2 rounded-full text-xs">${cars.length}</span>
+         </h4>
+         <div class="space-y-2 max-h-60 overflow-y-auto pr-1">`;
+         
+         if (cars.length === 0) {
+             content += `<p class="text-xs text-gray-400 italic text-center py-4">Empty</p>`;
+         } else {
+             cars.forEach(c => {
+                 let durationStr = '--';
+                 if (c.lastUpdated) {
+                     const diffMs = new Date() - new Date(c.lastUpdated);
+                     const diffHrs = Math.floor(diffMs / 3600000);
+                     const diffMins = Math.round((diffMs % 3600000) / 60000);
+                     durationStr = `${diffHrs}h ${diffMins}m`;
+                 }
+                 
+                 const originText = c.visitorHost ? `${c.visitorHost} (via ${c.currentArea})` : `From ${c.currentArea}`;
+                 const aging = getAgingDetails(c);
+                 const styles = getAgingStyles(aging.status);
+                 
+                 let cardClass = "text-xs p-3 rounded-lg bg-white border border-gray-100 shadow-sm hover:border-indigo-200 transition group";
+                 let badgeHtml = "";
+                 
+                 if(aging.status !== 'normal') {
+                     cardClass = `text-xs p-3 rounded-lg ${styles.bg} border ${styles.border} shadow-sm transition group`;
+                     badgeHtml = `<span class="block mt-1 text-[9px] font-bold ${styles.text} bg-white border ${styles.border} px-1.5 py-0.5 rounded uppercase w-max">${styles.badgeText} (${aging.days}d)</span>`;
+                 }
 
-         let chipsHtml = cars.length === 0 ? '<p class="text-gray-400 text-sm italic w-full text-center mt-4">Empty</p>' : cars.map(c => {
-             const aging = getAgingDetails(c);
-             const styles = getAgingStyles(aging.status);
-             let chipClass = 'bg-gray-50 text-gray-700 border-gray-200';
-             if(aging.status !== 'normal') chipClass = `${styles.bg} ${styles.text} ${styles.border} shadow-sm`;
-             return `<span class="inline-block px-2 py-1 text-xs font-mono font-bold ${chipClass} rounded border">${c.vin}${c.model ? ' <span class="text-[9px] text-gray-500 font-sans">'+c.model+'</span>' : ''}</span>`;
-         }).join('');
-
-         div.innerHTML = `
-            <div class="flex justify-between items-baseline mb-3">
-                <h3 class="text-lg font-bold text-gray-800">${nwa}</h3>
-                <span class="text-sm font-semibold px-2 py-0.5 bg-gray-100 rounded text-gray-600">${cars.length}</span>
-            </div>
-            <div class="flex flex-wrap gap-2 content-start min-h-[80px]">
-                ${chipsHtml}
-            </div>
-            <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-5 transition rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none">
-                <span class="bg-white px-3 py-1 rounded-full shadow text-xs font-bold text-gray-700">View Details</span>
-            </div>
-         `;
+                 content += `
+                    <div class="${cardClass}">
+                        <div class="flex justify-between items-start mb-1">
+                            <div>
+                                <button onclick="viewCarHistory('${c.vin}')" class="font-mono font-bold text-indigo-700 hover:text-indigo-900 hover:underline text-sm">${c.vin}</button>
+                                ${badgeHtml}
+                            </div>
+                            <span class="text-[10px] font-semibold text-gray-500 bg-gray-50 border px-1.5 py-0.5 rounded shrink-0 ml-2">${durationStr}</span>
+                        </div>
+                        <div class="flex justify-between text-gray-500 mt-1">
+                            <span class="font-medium">${c.model || 'Unknown'}</span>
+                            <span class="italic text-[10px]">${originText}</span>
+                        </div>
+                    </div>`;
+             });
+         }
+         content += `</div>`;
+         div.innerHTML = content;
          nonWorkingGrid.appendChild(div);
      });
-};
-
-// NEW: NWA Modal Logic
-window.openNWAModal = (nwa) => {
-     const cars = carsByTemp[nwa] || [];
-     document.getElementById('nwa-list-title').textContent = `${nwa} Vehicles`;
-     const content = document.getElementById('nwa-list-content');
-     content.innerHTML = '';
-
-     if(cars.length === 0) {
-         content.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-400 italic">No vehicles in this location.</td></tr>';
-     } else {
-         cars.forEach(c => {
-             // Calculate duration
-             let durationStr = '--';
-             if (c.lastUpdated) {
-                 const diffMs = new Date() - (c.lastUpdated.toDate ? c.lastUpdated.toDate() : new Date(c.lastUpdated));
-                 const diffHrs = Math.floor(diffMs / 3600000);
-                 const diffMins = Math.round((diffMs % 3600000) / 60000);
-                 durationStr = `${diffHrs}h ${diffMins}m`;
-             }
-
-             const originText = c.visitorHost ? `${c.visitorHost} (via ${c.currentArea})` : `From ${c.currentArea}`;
-             const draft = c.tempData || {};
-
-             // Calculate Aging
-             const aging = getAgingDetails(c);
-             const styles = getAgingStyles(aging.status);
-             let rowClass = aging.status !== 'normal' ? styles.tableRow : "hover:bg-gray-50";
-             let agingIndicator = aging.status !== 'normal' ? `<span class="block text-[9px] font-bold ${styles.text} bg-white border ${styles.border} px-1.5 py-0.5 rounded uppercase mt-1.5 tracking-wide shadow-sm w-max mx-auto">${styles.badgeText} (${aging.days}d)</span>` : '';
-
-             content.innerHTML += `
-                <tr class="${rowClass} transition">
-                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs font-bold font-mono text-indigo-900">
-                        <button onclick="viewCarHistory('${c.vin}')" class="hover:underline decoration-dotted hover:text-indigo-600 transition">${c.vin}</button>
-                        ${agingIndicator}
-                    </td>
-                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs text-gray-500">${c.model || '-'}</td>
-                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs text-gray-700 italic">${originText}</td>
-                    <td class="px-4 py-3 whitespace-nowrap text-center text-xs font-semibold text-gray-600">${durationStr}</td>
-                    <td class="px-4 py-3">
-                        <textarea 
-                            oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"
-                            onfocus="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"
-                            onchange="saveDraftData('${c.vin}', 'comment', this.value)" 
-                            class="w-full text-xs border border-gray-300 rounded p-1.5 bg-white/50 focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none overflow-hidden resize-none min-h-[2.5rem]" 
-                            placeholder="..."
-                        >${draft.comment || ''}</textarea>
-                    </td>
-                </tr>
-             `;
-         });
-     }
-     document.getElementById('nwa-list-modal').classList.remove('hidden');
-     document.getElementById('nwa-list-modal').classList.add('flex');
-};
-
-window.closeNWAModal = () => {
-     document.getElementById('nwa-list-modal').classList.add('hidden');
-     document.getElementById('nwa-list-modal').classList.remove('flex');
-};
-
-window.filterNWAList = () => {
-    const filter = document.getElementById('nwa-list-search').value.toUpperCase();
-    const trs = document.getElementById('nwa-list-content').getElementsByTagName('tr');
-    for (let i = 0; i < trs.length; i++) {
-        const td = trs[i].getElementsByTagName('td')[0];
-        if (td) {
-            trs[i].style.display = (td.textContent || td.innerText).toUpperCase().indexOf(filter) > -1 ? "" : "none";
-        }
-    }
 };
 
 const renderWIPBoard = () => {
@@ -1432,7 +1186,6 @@ const renderWIPBoard = () => {
         wipContainer.className = "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6";
         appConfig.areas.forEach(area => {
             const cars = carsByArea[area] || [];
-            // Use consistent British Racing Green theme for all WIP pots
             let borderColor = 'border-indigo-400';
 
             const areaCard = document.createElement('div');
@@ -1469,14 +1222,10 @@ const renderWIPBoard = () => {
             if(!combined.find(c => c.vin === v.vin)) combined.push(v);
         });
         
-        // Use consistent British Racing Green theme
         let borderColor = 'border-indigo-400';
-
         const tableContainer = document.createElement('div');
         tableContainer.className = `bg-white rounded-xl shadow-lg border-t-8 ${borderColor} overflow-hidden`;
 
-        
-        // Determine if Post WIP enabled for this area
         const isPostWipEnabled = (appConfig.postWipEnabledZones || []).includes(area);
         const postWipHeader = isPostWipEnabled ? `<th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-1/12">Post WIP</th>` : '';
 
@@ -1523,12 +1272,11 @@ const renderWIPBoard = () => {
                      statusInput = `<span class="text-xs text-gray-400 italic">No options</span>`;
                 }
 
-		let tagsHtml = `<div id="tag-container-${car.vin}" class="flex flex-wrap gap-1 mb-1 justify-center">`;
+		        let tagsHtml = `<div id="tag-container-${car.vin}" class="flex flex-wrap gap-1 mb-1 justify-center">`;
                 tags.forEach(tag => { tagsHtml += `<span class="tag-badge">${tag}<button onclick="removeStatusTag('${car.vin}', '${tag}')">×</button></span>`; });
                 tagsHtml += `</div>`;
                 tagsHtml += `<div class="flex gap-1 justify-center"><input type="text" id="new-tag-${car.vin}" class="w-20 text-xs border rounded p-1" placeholder="Tag..."><button onclick="addStatusTag('${car.vin}', document.getElementById('new-tag-${car.vin}').value); document.getElementById('new-tag-${car.vin}').value='';" class="bg-green-500 text-white px-1 rounded text-xs font-bold">+</button></div>`;
                 
-                // --- NEW: CALCULATE AGING STYLES FOR THE TABLE ROW ---
                 const aging = getAgingDetails(car);
                 const styles = getAgingStyles(aging.status);
                 let agingIndicator = '';
@@ -1540,7 +1288,6 @@ const renderWIPBoard = () => {
                 if(!isVisitorHost && !isVisitorSender && !isAbsent && aging.status !== 'normal') {
                     rowClass = `${styles.tableRow} transition`;
                 }
-                // -----------------------------------------------------
 
                 let tempActionCell = "";
                 let permActionCell = "";
@@ -1549,11 +1296,9 @@ const renderWIPBoard = () => {
                 if(isVisitorHost || isVisitorSender) {
                      rowClass = "bg-orange-100 border-l-4 border-orange-400";
                      if(isVisitorSender && !isVisitorHost) {
-                        // I sent it to NWA (Away) - Show Retrieve Button
                         tempActionCell = `<span class="block text-xs font-bold mb-1 text-center">At ${car.tempLocation}</span><button onclick="retrieveCar('${car.vin}')" class="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 font-bold text-xs mx-auto block">Retrieve</button>`;
                         permActionCell = `<span class="text-xs italic text-gray-500 font-bold">Visitor (Away)</span>`;
                      } else {
-                        // Physically here
                          tempActionCell = `
                             <div class="flex flex-col gap-1">
                                 <button onclick="returnCar('${car.vin}')" class="bg-blue-600 text-white px-2 py-1 rounded shadow hover:bg-blue-700 font-bold text-xs w-full">Send back to ${car.currentArea}</button>
@@ -1561,28 +1306,24 @@ const renderWIPBoard = () => {
                             </div>`;
                        permActionCell = `<span class="text-xs italic text-gray-500 font-bold">Visitor from ${car.currentArea}</span>`;
                      }
-                     if(isPostWipEnabled) postWipCell = `<td></td>`; // Visitors probably shouldn't be sent to Post WIP? Or maybe they should. Left empty for now.
+                     if(isPostWipEnabled) postWipCell = `<td></td>`;
                 } else if (isAbsent) {
                     rowClass = "bg-yellow-100 border-l-4 border-yellow-400";
                     if (isNonWorking) {
                         if (isManagedByVisitor) {
-                             // Owner View: Managed by Visitor
                              tempActionCell = `<span class="block text-xs font-bold text-red-600 text-center">At ${car.tempLocation}</span><span class="block text-[9px] text-gray-500 text-center">(Via ${car.visitorHost})</span>`;
                              permActionCell = `<span class="text-xs italic text-gray-400 block text-center">--</span>`;
                         } else {
-                             // Owner View: Managed by Owner
                              tempActionCell = `<span class="block text-xs font-bold mb-1 text-center">At ${car.tempLocation}</span><button onclick="retrieveCar('${car.vin}')" class="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 font-bold text-xs mx-auto block">Retrieve</button>`;
                              permActionCell = `<span class="text-xs italic text-gray-400 block text-center">--</span>`;
                         }
                     } else {
-                        // In Working Area: Highlighted orange, unretrievable
                         rowClass = "bg-orange-50 border-l-4 border-orange-400 text-gray-600";
                         tempActionCell = `<span class="block text-xs font-bold text-indigo-600 text-center">Located at ${car.tempLocation}</span><span class="block text-[10px] text-gray-500 text-center">(Must be returned by them)</span>`;
                         permActionCell = `<span class="text-xs italic text-gray-400 block text-center">--</span>`;
                     }
                      if(isPostWipEnabled) postWipCell = `<td></td>`;
                 } else {
-                    // Disable Temp Button if no temp locations are configured
                     const tempDestinations = (appConfig.tempRoutes && appConfig.tempRoutes[area]) || [];
                     if (tempDestinations.length > 0) {
                         tempActionCell = `<button onclick="initiateMove('${car.vin}', 'temp')" class="bg-yellow-500 text-white px-3 py-1 rounded text-xs font-bold hover:bg-yellow-600 shadow-sm transition w-full">Temp Move</button>`;
@@ -1640,7 +1381,6 @@ const renderWIPBoard = () => {
     }
 };
 
-// --- MANAGER AREA MODAL ---
 let currentOpenArea = null;
 window.openAreaDetails = (area) => {
     currentOpenArea = area;
@@ -1665,7 +1405,6 @@ window.openAreaDetails = (area) => {
             if(car.tempLocation) {
                 statusText += `<br><span class="text-orange-600 text-[10px] font-bold">📍 At ${car.tempLocation}`;
                 if(car.visitorHost && car.visitorHost !== area) {
-                     // FIX: Correct wording for manager view
                      statusText += ` (via ${car.visitorHost})`;
                 }
                 statusText += `</span>`;
@@ -1689,114 +1428,116 @@ window.openAreaDetails = (area) => {
 window.closeAreaModal = () => { areaDetailsModal.classList.add('hidden'); areaDetailsModal.classList.remove('flex'); currentOpenArea = null; };
 window.viewCarHistory = (vin) => { const car = allCars.find(c => c.vin === vin); if(car) openModal(car.vin, car.history); };
 
-// --- ACTIONS & DATA SAVING ---
+// --- ACTIONS & DATA SAVING (SQLite Implementation) ---
 window.saveDraftData = async (vin, field, value) => {
-    if(!userId) return;
-    try { const carRef = doc(db, COLLECTION_PATH, vin); await updateDoc(carRef, { [`tempData.${field}`]: value }); } catch(e) { console.error(e); }
+    try { 
+        let col = '';
+        if (field === 'comment') col = 'temp_comment';
+        else if (field === 'status') col = 'temp_status';
+        else if (field === 'va') col = 'temp_va';
+        else if (field === 'nva') col = 'temp_nva';
+
+        db.exec({ sql: `UPDATE cars SET ${col} = ? WHERE vin = ?`, bind: [value, vin] });
+        fetchAllCars();
+    } catch(e) { console.error(e); }
 };
 
-// Status Tag Logic
 window.addStatusTag = async (vin, tag) => {
-    if (!tag || !userId) return;
+    if (!tag) return;
     const car = allCars.find(c => c.vin === vin);
     const currentTags = car.tempData?.statuses || [];
     if (!currentTags.includes(tag)) {
         const newTags = [...currentTags, tag];
-        try { await updateDoc(doc(db, COLLECTION_PATH, vin), { [`tempData.statuses`]: newTags }); } catch(e) { console.error(e); }
+        try { 
+            db.exec({ sql: `UPDATE cars SET temp_tags = ? WHERE vin = ?`, bind: [JSON.stringify(newTags), vin] });
+            fetchAllCars();
+        } catch(e) { console.error(e); }
     }
 };
 
 window.removeStatusTag = async (vin, tag) => {
-    if (!userId) return;
     const car = allCars.find(c => c.vin === vin);
     const currentTags = car.tempData?.statuses || [];
     const newTags = currentTags.filter(t => t !== tag);
-    try { await updateDoc(doc(db, COLLECTION_PATH, vin), { [`tempData.statuses`]: newTags }); } catch(e) { console.error(e); }
+    try { 
+        db.exec({ sql: `UPDATE cars SET temp_tags = ? WHERE vin = ?`, bind: [JSON.stringify(newTags), vin] });
+        fetchAllCars();
+    } catch(e) { console.error(e); }
 };
 
 // Temp Moves
 window.sendToTemp = async (vin, target) => {
-    if(!userId || !target) return;
+    if(!target) return;
     const car = allCars.find(c=>c.vin===vin);
-    const draft = car.tempData || {};
-    // determine "from" location: if I am a visitor moving it, it's from currentUserRole (visitor zone). If I am owner, it's from car.currentArea.
     const fromLocation = (currentUserRole === 'Manager' || currentUserRole === 'Admin') ? car.currentArea : currentUserRole;
 
-    const metricsSnapshot = { 
-        va: draft.va || 0, 
-        nva: draft.nva || 0, 
-        comment: draft.comment || '', 
-        status: draft.status || '', 
-        tags: draft.statuses || [] 
-    };
-    
     try {
-        // If I am visitor moving to NWA, I become the visitorHost
         let visitorHost = car.visitorHost || null;
-        if (car.tempLocation === currentUserRole) {
-            visitorHost = currentUserRole;
-        }
+        if (car.tempLocation === currentUserRole) visitorHost = currentUserRole;
 
-	await updateDoc(doc(db, COLLECTION_PATH, vin), {
-                tempLocation: target,
-                visitorHost: visitorHost, // Save who sent it to NWA if not owner
-                lastUpdated: Timestamp.now(),
-                history: [...(car.history||[]), { area: fromLocation, status: 'Temp Move', timestamp: Timestamp.now(), userId, to: target, metrics: metricsSnapshot }]
-            });
-		
-    } catch(e) { alert(e.message); }
+        const timestamp = new Date().toISOString();
+        const draft = car.tempData || {};
+        const tagsJson = JSON.stringify(draft.statuses || []);
+
+        db.exec('BEGIN TRANSACTION;');
+        db.exec({
+            sql: `INSERT INTO car_history (vin, area, status, timestamp, userId, from_location, metrics_va, metrics_nva, metrics_comment, metrics_status, metrics_tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            bind: [vin, target, 'Temp Move', timestamp, userId, fromLocation, draft.va||0, draft.nva||0, draft.comment||'', draft.status||'', tagsJson]
+        });
+        db.exec({
+            sql: `UPDATE cars SET tempLocation = ?, visitorHost = ?, lastUpdated = ? WHERE vin = ?`,
+            bind: [target, visitorHost, timestamp, vin]
+        });
+        db.exec('COMMIT;');
+        fetchAllCars();
+    } catch(e) { 
+        db.exec('ROLLBACK;'); 
+        alert(e.message); 
+    }
 };
 
 window.returnCar = async (vin) => {
-    if(!userId) return;
     const car = allCars.find(c=>c.vin===vin);
-    
-    // Capture the inputted VA/NVA/Notes before returning
-    const draft = car.tempData || {};
-    const metricsSnapshot = { 
-        va: draft.va || 0, 
-        nva: draft.nva || 0, 
-        comment: draft.comment || '', 
-        status: draft.status || '', 
-        tags: draft.statuses || [] 
-    };
-
     try {
-        await updateDoc(doc(db, COLLECTION_PATH, vin), {
-            tempLocation: null, 
-            visitorHost: null, 
-            tempData: {}, 
-            lastUpdated: Timestamp.now(),
-            // Log under where it WAS, pointing to where it is GOING
-            history: [...(car.history||[]), { area: car.tempLocation || car.currentArea, status: 'Returned', timestamp: Timestamp.now(), userId, to: car.currentArea, metrics: metricsSnapshot }]
+        const timestamp = new Date().toISOString();
+        db.exec('BEGIN TRANSACTION;');
+        db.exec({
+            sql: `INSERT INTO car_history (vin, area, status, timestamp, userId) VALUES (?, ?, 'Returned', ?, ?)`,
+            bind: [vin, car.currentArea, timestamp, userId]
         });
-    } catch(e) { alert(e.message); }
+        db.exec({
+            sql: `UPDATE cars SET tempLocation = NULL, visitorHost = NULL, lastUpdated = ? WHERE vin = ?`,
+            bind: [timestamp, vin]
+        });
+        db.exec('COMMIT;');
+        fetchAllCars();
+    } catch(e) { 
+        db.exec('ROLLBACK;'); 
+        alert(e.message); 
+    }
 };
 
 window.retrieveCar = async (vin) => {
      const car = allCars.find(c=>c.vin===vin);
      if (car.visitorHost === currentUserRole) {
-         const draft = car.tempData || {};
-         const metricsSnapshot = { 
-             va: draft.va || 0, 
-             nva: draft.nva || 0, 
-             comment: draft.comment || '', 
-             status: draft.status || '', 
-             tags: draft.statuses || [] 
-         };
-
          try {
-            await updateDoc(doc(db, COLLECTION_PATH, vin), {
-                tempLocation: currentUserRole,
-                tempData: {}, 
-                lastUpdated: Timestamp.now(),
-                history: [...(car.history||[]), { area: car.tempLocation, status: 'Retrieved', timestamp: Timestamp.now(), userId, to: currentUserRole, metrics: metricsSnapshot }]
+            const timestamp = new Date().toISOString();
+            db.exec('BEGIN TRANSACTION;');
+            db.exec({
+                sql: `INSERT INTO car_history (vin, area, status, timestamp, userId, from_location) VALUES (?, ?, 'Retrieved', ?, ?, ?)`,
+                bind: [vin, currentUserRole, timestamp, userId, car.tempLocation]
             });
-        } catch(e) { alert(e.message); }
+            db.exec({
+                sql: `UPDATE cars SET tempLocation = ?, lastUpdated = ? WHERE vin = ?`,
+                bind: [currentUserRole, timestamp, vin]
+            });
+            db.exec('COMMIT;');
+            fetchAllCars();
+        } catch(e) { db.exec('ROLLBACK;'); alert(e.message); }
      } else {
          window.returnCar(vin); 
      }
-};
+}; 
 
 const populateAreaSelect = () => {
     if (!addCarAreaSelect) return;
@@ -1807,21 +1548,17 @@ const populateAreaSelect = () => {
         });
         addCarAreaContainer.classList.remove('hidden');
     } else {
-         // For Zone Users, area is fixed, but we populate for the logic to use
          const opt = document.createElement('option'); opt.value = currentUserRole; opt.textContent = currentUserRole; opt.selected = true; addCarAreaSelect.appendChild(opt);
          addCarAreaContainer.classList.add('hidden');
     }
 };
 
-// NEW: Open Add Car Modal
 window.openAddCarModal = () => {
-     // Populate Models
      addCarModelSelect.innerHTML = '<option value="" disabled selected>Select Model...</option>' + (appConfig.models || []).map(m => `<option value="${m}">${m}</option>`).join('');
-     // Reset Fields
      document.getElementById('add-car-vin').value = '';
      document.getElementById('add-car-kenn').value = '';
      document.getElementById('add-car-seq').value = '';
-     
+     document.getElementById('add-car-year').value = '';
      populateAreaSelect();
      addCarModal.classList.remove('hidden');
      addCarModal.classList.add('flex');
@@ -1832,14 +1569,12 @@ window.closeAddCarModal = () => {
      addCarModal.classList.remove('flex');
 };
 
-// NEW: Save New Car
 window.saveNewCar = async () => {
      const vin = document.getElementById('add-car-vin').value.trim().toUpperCase();
      const kenn = document.getElementById('add-car-kenn').value.trim();
      const seq = document.getElementById('add-car-seq').value.trim();
      const model = addCarModelSelect.value;
      const year = document.getElementById('add-car-year').value.trim();
-     // Determine Area: If admin/manager use dropdown, else use current user role
      const area = (currentUserRole === 'Manager' || currentUserRole === 'Admin') ? addCarAreaSelect.value : currentUserRole;
 
      if (vin.length !== 17) return alert("VIN must be 17 characters");
@@ -1847,27 +1582,28 @@ window.saveNewCar = async () => {
      if (!year || year.length !== 4) return alert("Please enter a valid 4-digit model year");
      if (!area) return alert("System Error: No start area defined");
      
-     // Check if VIN exists
      const existing = allCars.find(c => c.vin === vin);
      if(existing) return alert(`VIN ${vin} already exists in ${existing.currentArea}`);
      
      try {
-         const timestamp = Timestamp.now();
-         await setDoc(doc(db, COLLECTION_PATH, vin), {
-             vin,
-             kenn,
-             sequence: seq,
-             model,
-             modelYear: year,
-             currentArea: area,
-             status: 'WIP',
-             lastUpdated: timestamp,
-             history: [{ area, status: 'WIP', timestamp, userId, action: 'Created' }],
-             tempData: {}
+         const timestamp = new Date().toISOString();
+         db.exec('BEGIN TRANSACTION;');
+         
+         db.exec({
+             sql: `INSERT INTO cars (vin, kenn, sequence, model, modelYear, currentArea, status, lastUpdated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             bind: [vin, kenn, seq, model, year, area, 'WIP', timestamp]
          });
+         db.exec({
+             sql: `INSERT INTO car_history (vin, area, status, timestamp, userId, action) VALUES (?, ?, ?, ?, ?, ?)`,
+             bind: [vin, area, 'WIP', timestamp, userId, 'Created']
+         });
+         
+         db.exec('COMMIT;');
          alert("Vehicle Registered Successfully!");
          closeAddCarModal();
+         fetchAllCars();
      } catch(e) {
+         db.exec('ROLLBACK;');
          console.error(e);
          alert("Error registering vehicle: " + e.message);
      }
@@ -1891,13 +1627,10 @@ window.initiateMove = (vin, type) => {
     const draft = car.tempData || {};
     pendingMove = { vin, type, va: draft.va || 0, nva: draft.nva || 0, comment: draft.comment || "No comment" };
     
-    // Setup Modal
     confirmVin.textContent = vin;
     confirmVa.textContent = pendingMove.va + " min"; 
     confirmNva.textContent = pendingMove.nva + " min"; 
     confirmComment.textContent = pendingMove.comment;
-    
-    // New: Type stored in hidden field to distinguish logic later
     document.getElementById('move-type-hidden').value = type;
 
     const selectEl = document.getElementById('confirm-target-select');
@@ -1921,7 +1654,6 @@ window.initiateMove = (vin, type) => {
         const postWipZones = appConfig.postWipZones || [];
         let options = `<option value="" disabled selected>Select Post-WIP Zone...</option>`;
         postWipZones.forEach(z => {
-            // Don't show current zone if doing transfer
             if(z !== car.currentArea) options += `<option value="${z}">${z}</option>`;
         });
         selectEl.innerHTML = options;
@@ -1931,17 +1663,14 @@ window.initiateMove = (vin, type) => {
          selectEl.innerHTML = `<option value="Complete" selected>Complete</option>`;
          selectEl.disabled = true;
     } else {
-        // Temp
         moveModalTitle.textContent = "Move to Temporary Location";
-        // If I am a visitor, I can move to NWA
-        if(car.tempLocation === currentUserRole) { // I am the visitor host
+        if(car.tempLocation === currentUserRole) { 
             const allNWA = appConfig.nonWorkingAreas || [];
             let options = `<option value="" disabled selected>Select NWA...</option>`;
             allNWA.forEach(d => options += `<option value="${d}">${d}</option>`);
             selectEl.innerHTML = options;
             selectEl.disabled = false;
         } else {
-            // Standard Temp Move logic
             const tempDestinations = (appConfig.tempRoutes && appConfig.tempRoutes[currentUserRole]) || [];
             const allLocs = [...appConfig.areas, ...appConfig.nonWorkingAreas];
             let options = `<option value="" disabled selected>Select Temp Location...</option>`;
@@ -1949,7 +1678,6 @@ window.initiateMove = (vin, type) => {
             if (tempDestinations.length > 0) {
                  tempDestinations.forEach(d => options += `<option value="${d}">${d}</option>`);
             } else {
-                 // Fallback: Show all except current
                  allLocs.filter(a => a !== currentUserRole).forEach(d => options += `<option value="${d}">${d}</option>`);
             }
             selectEl.innerHTML = options;
@@ -1964,86 +1692,76 @@ window.initiateMove = (vin, type) => {
 window.closeConfirmModal = () => { confirmModal.classList.add('hidden'); confirmModal.classList.remove('flex'); pendingMove = null; };
 
 btnConfirmMove.onclick = async () => {
-    if(!pendingMove || !userId) return;
+    if(!pendingMove) return;
     const target = document.getElementById('confirm-target-select').value;
-    // Allow target to be implied if it's "Complete" and disabled
     if (!target) { alert("Please select a destination"); return; }
     
     const { vin, type, va, nva, comment } = pendingMove; 
-    
     const car = allCars.find(c => c.vin === vin);
     const currentArea = car.currentArea;
-    const timestamp = Timestamp.now();
-    
-    // Include Tags and Status in metrics snapshot, check for nulls
+    const timestamp = new Date().toISOString();
     const draft = car.tempData || {};
-    const metricsSnapshot = { va, nva, comment, status: draft.status || '', tags: draft.statuses || [] };
+    const tagsJson = JSON.stringify(draft.statuses || []);
 
     try {
+        db.exec('BEGIN TRANSACTION;');
+
         if (type === 'push') {
-            const finishEntry = { area: currentArea, status: 'Finished', timestamp, userId, metrics: metricsSnapshot };
-            let updates = { lastUpdated: timestamp, tempData: {}, tempLocation: null, visitorHost: null }; // Clear host
+            db.exec({
+                sql: `INSERT INTO car_history (vin, area, status, timestamp, userId, metrics_va, metrics_nva, metrics_comment, metrics_status, metrics_tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                bind: [vin, currentArea, 'Finished', timestamp, userId, va, nva, comment, draft.status||'', tagsJson]
+            });
             if (target === 'Complete') {
-                updates.status = 'Finished';
-                updates.history = [...(car.history || []), finishEntry];
+                db.exec({
+                    sql: `UPDATE cars SET status = 'Finished', lastUpdated = ?, tempLocation = NULL, visitorHost = NULL, temp_va = 0, temp_nva = 0, temp_comment = NULL, temp_status = NULL, temp_tags = NULL WHERE vin = ?`,
+                    bind: [timestamp, vin]
+                });
             } else {
-                const nextEntry = { area: target, status: 'WIP', timestamp, userId };
-                updates.currentArea = target;
-                updates.status = 'WIP';
-                updates.history = [...(car.history || []), finishEntry, nextEntry];
+                db.exec({ sql: `INSERT INTO car_history (vin, area, status, timestamp, userId) VALUES (?, ?, 'WIP', ?, ?)`, bind: [vin, target, timestamp, userId] });
+                db.exec({ sql: `UPDATE cars SET currentArea = ?, status = 'WIP', lastUpdated = ?, tempLocation = NULL, visitorHost = NULL, temp_va = 0, temp_nva = 0, temp_comment = NULL, temp_status = NULL, temp_tags = NULL WHERE vin = ?`, bind: [target, timestamp, vin] });
             }
-            await updateDoc(doc(db, COLLECTION_PATH, vin), updates);
             showMessage(`${vin} pushed to ${target}.`);
         } else if (type === 'post-wip' || type === 'post-wip-transfer') {
-             // Moving to Post-WIP Zone
-             await updateDoc(doc(db, COLLECTION_PATH, vin), {
-                currentArea: target,
-                status: 'Post-WIP',
-                tempLocation: null,
-                visitorHost: null,
-                lastUpdated: timestamp,
-                history: [...(car.history||[]), { area: target, status: 'Post-WIP', timestamp: Timestamp.now(), userId, from: currentArea, metrics: metricsSnapshot }]
+             db.exec({
+                sql: `INSERT INTO car_history (vin, area, status, timestamp, userId, from_location, metrics_va, metrics_nva, metrics_comment, metrics_status, metrics_tags) VALUES (?, ?, 'Post-WIP', ?, ?, ?, ?, ?, ?, ?, ?)`,
+                bind: [vin, target, timestamp, userId, currentArea, va, nva, comment, draft.status||'', tagsJson]
              });
+             db.exec({ sql: `UPDATE cars SET currentArea = ?, status = 'Post-WIP', lastUpdated = ?, tempLocation = NULL, visitorHost = NULL WHERE vin = ?`, bind: [target, timestamp, vin] });
              showMessage(`${vin} moved to Post-WIP: ${target}`);
         } else if (type === 'post-wip-complete') {
-             // Completing from Post-WIP
-             await updateDoc(doc(db, COLLECTION_PATH, vin), {
-                status: 'Finished',
-                lastUpdated: timestamp,
-                tempLocation: null,
-                history: [...(car.history||[]), { area: currentArea, status: 'Finished', timestamp: Timestamp.now(), userId, metrics: metricsSnapshot }]
+             db.exec({
+                sql: `INSERT INTO car_history (vin, area, status, timestamp, userId, metrics_va, metrics_nva, metrics_comment, metrics_status, metrics_tags) VALUES (?, ?, 'Finished', ?, ?, ?, ?, ?, ?, ?)`,
+                bind: [vin, currentArea, timestamp, userId, va, nva, comment, draft.status||'', tagsJson]
              });
+             db.exec({ sql: `UPDATE cars SET status = 'Finished', lastUpdated = ?, tempLocation = NULL, visitorHost = NULL WHERE vin = ?`, bind: [timestamp, vin] });
              showMessage(`${vin} completed from Post-WIP.`);
-		} else {
-            // Temp Move (Standard OR Visitor-to-NWA)
-            // Determine FROM location: if current user is temp host, from is temp host. else from owner.
+        } else {
             const fromLoc = (car.tempLocation === currentUserRole) ? currentUserRole : car.currentArea;
-            // Determine if I become the host
-            let newHost = car.visitorHost || null; // FIX: Ensure null if undefined
-            if(car.tempLocation === currentUserRole) newHost = currentUserRole; // I am visitor sending to NWA
+            let newHost = car.visitorHost || null; 
+            if(car.tempLocation === currentUserRole) newHost = currentUserRole; 
 
-             await updateDoc(doc(db, COLLECTION_PATH, vin), {
-                tempLocation: target,
-                visitorHost: newHost,
-                lastUpdated: timestamp,
-                history: [...(car.history||[]), { area: fromLoc, status: 'Temp Move', timestamp: Timestamp.now(), userId, to: target, metrics: metricsSnapshot }]
+            db.exec({
+                sql: `INSERT INTO car_history (vin, area, status, timestamp, userId, from_location, metrics_va, metrics_nva, metrics_comment, metrics_status, metrics_tags) VALUES (?, ?, 'Temp Move', ?, ?, ?, ?, ?, ?, ?, ?)`,
+                bind: [vin, target, timestamp, userId, fromLoc, va, nva, comment, draft.status||'', tagsJson]
             });
+            db.exec({ sql: `UPDATE cars SET tempLocation = ?, visitorHost = ?, lastUpdated = ? WHERE vin = ?`, bind: [target, newHost, timestamp, vin] });
             showMessage(`${vin} moved to ${target}.`);
         }
+        
+        db.exec('COMMIT;');
         closeConfirmModal();
-    } catch (e) { console.error(e); alert("Move failed: " + e.message); }
+        fetchAllCars();
+    } catch (e) { db.exec('ROLLBACK;'); console.error(e); alert("Move failed: " + e.message); }
 };
 
 window.handleTrackSearch = () => {
      const vin = document.getElementById('track-vin-input').value.trim().toUpperCase();
-     // Check local list first
      let car = allCars.find(c => c.vin === vin);
      const res = document.getElementById('track-result');
      
      const renderResult = (carData) => {
          let html = '';
          [...(carData.history||[])].reverse().forEach(h => {
-             const isWip = h.status==='WIP';
              const isTemp = h.status === 'Temp Move';
              const isReturn = h.status === 'Returned';
              let colorClass = 'border-l-4 border-blue-200 bg-gray-50';
@@ -2054,7 +1772,7 @@ window.handleTrackSearch = () => {
              else if (isReturn) { colorClass = 'border-l-4 border-indigo-400 bg-indigo-50'; title = 'RETURNED'; }
              else if (h.status === 'Post-WIP') { colorClass = 'border-l-4 border-purple-400 bg-purple-50'; title = 'POST-WIP'; }
 
-			let extras = '';
+             let extras = '';
              if(h.metrics) {
                  extras = `
                     <div class="mt-2 text-xs bg-white p-2 rounded border border-gray-200">
@@ -2067,23 +1785,9 @@ window.handleTrackSearch = () => {
                     </div>`;
              }
 
-             // Determine clear Destination and Origin naming
-             let displayArea = h.area;
-             let originText = '';
-             if (h.to) {
-                 displayArea = h.to;
-                 if (h.status === 'Temp Move') originText = `(sent from ${h.area})`;
-                 else if (h.status === 'Returned') originText = `(returned from ${h.area})`;
-                 else if (h.status === 'Retrieved') originText = `(retrieved from ${h.area})`;
-                 else originText = `(from ${h.area})`;
-             } else if (h.from) {
-                 displayArea = h.area;
-                 originText = `(from ${h.from})`;
-             }
-
-		html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
-                <p class="font-bold text-gray-800">${displayArea} ${originText ? `<span class="text-xs font-normal text-gray-500 italic ml-1">${originText}</span>` : ''} <span class="text-xs font-normal bg-white border px-1 rounded ml-2">${title}</span></p>
-                <p class="text-xs text-gray-500">${new Date(h.timestamp.toDate()).toLocaleString()}</p>
+             html += `<div class="mb-4 pl-4 ${colorClass} p-3 rounded shadow-sm">
+                <p class="font-bold text-gray-800">${h.area} <span class="text-xs font-normal bg-white border px-1 rounded ml-2">${title}</span></p>
+                <p class="text-xs text-gray-500">${new Date(h.timestamp).toLocaleString()}</p>
                 ${extras}
              </div>`;
          });
@@ -2096,7 +1800,6 @@ window.handleTrackSearch = () => {
                 <div class="text-right text-xs">
                     <p><span class="font-bold text-gray-600">KENN:</span> ${carData.kenn || '--'}</p>
                     <p><span class="font-bold text-gray-600">SEQ:</span> ${carData.sequence || '--'}</p>
-                    <p class="mt-1"><span class="font-bold text-gray-600">SYS TIME:</span> ${getAgingDetails(carData).days} Working Days</p>
                 </div>
             </div>
             <p class="mt-2 text-lg">Currently: <strong>${carData.currentArea}</strong> (${carData.status})</p>
@@ -2107,18 +1810,7 @@ window.handleTrackSearch = () => {
      if (car) {
          renderResult(car);
      } else {
-         // Fetch from DB if not found locally (finished cars)
-         res.innerHTML = '<p class="text-center text-gray-500 mt-10">Searching database...</p>';
-         getDoc(doc(db, COLLECTION_PATH, vin)).then(docSnap => {
-             if (docSnap.exists()) {
-                 renderResult(docSnap.data());
-             } else {
-                 res.innerHTML = '<p class="text-center text-red-500 mt-10">VIN Not Found</p>';
-             }
-         }).catch(err => {
-             console.error(err);
-             res.innerHTML = '<p class="text-center text-red-500 mt-10">Error searching database</p>';
-         });
+         res.innerHTML = '<p class="text-center text-red-500 mt-10">VIN Not Found</p>';
      }
 };
 
@@ -2130,24 +1822,22 @@ window.openModal = (vin, history) => {
      document.getElementById('modal-car-seq').textContent = car.sequence || '--';
      document.getElementById('modal-car-year').textContent = car.modelYear || '--';
      
-     // --- NEW: AGING EVALUATION FOR HEADER COLOR ---
      const aging = getAgingDetails(car);
      const styles = getAgingStyles(aging.status);
      const header = document.getElementById('history-modal-header');
      if(header) header.className = `${styles.headerBg} p-6 text-white transition-colors duration-300`;
      
-	const badgeContainer = document.getElementById('modal-aging-badge-container');
+     const badgeContainer = document.getElementById('modal-aging-badge-container');
      if(badgeContainer) {
          if(aging.status !== 'normal') {
              badgeContainer.innerHTML = `<span class="inline-block mt-2 px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider border border-white/30 backdrop-blur-sm shadow-sm">${styles.badgeText} (${aging.days} Working Days)</span>`;
          } else {
-             badgeContainer.innerHTML = `<span class="inline-block mt-2 px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-wider border border-white/30 backdrop-blur-sm shadow-sm">${aging.days} Working Days</span>`;
+             badgeContainer.innerHTML = '';
          }
      }
-     // ----------------------------------------------     
-     // Dynamic External Links
-     const date = car.history && car.history.length > 0 ? car.history[0].timestamp.toDate() : new Date();
-     const scanYear = date.getFullYear(); // Changed from slice(-2) to full year
+     
+     const date = car.history && car.history.length > 0 ? new Date(car.history[0].timestamp) : new Date();
+     const scanYear = date.getFullYear(); 
      const flagsUrl = `http://flags:8080/product-enquiry/${vin}`;
      const prodisUrl = `https://bymccrlscre4.bentley.emea.vwg/peek/#/vehicleTestData?vehicle=83${scanYear}${car.kenn}&qFilter=eq`;
      
@@ -2161,7 +1851,7 @@ window.openModal = (vin, history) => {
 
      const historyContent = document.getElementById('history-content');
      historyContent.innerHTML = history.length ? '' : '<p class="text-gray-400 italic text-center">No history found.</p>';
-     [...history].reverse().forEach((item, index) => {
+     [...history].reverse().forEach((item) => {
         const isTemp = item.status === 'Temp Move';
         const isReturn = item.status === 'Returned';
         let colorClass = 'bg-blue-100 text-blue-700 border-blue-200';
@@ -2190,24 +1880,10 @@ window.openModal = (vin, history) => {
             icon = 'Post-WIP';
         }
         
-		let metricsHtml = '';
+        let metricsHtml = '';
         if (item.metrics) {
             metricsHtml = `
                 <div class="mt-2 pt-2 border-t border-gray-200/50 text-xs"><div class="flex gap-3 mb-1"><span class="font-semibold">VA: ${item.metrics.va}m</span><span class="font-semibold">NVA: ${item.metrics.nva}m</span></div><div class="italic opacity-75">"${item.metrics.comment}"</div></div>`;
-        }
-
-        // Determine clear Destination and Origin naming
-        let displayArea = item.area;
-        let originText = '';
-        if (item.to) {
-            displayArea = item.to;
-            if (item.status === 'Temp Move') originText = `(sent from ${item.area})`;
-            else if (item.status === 'Returned') originText = `(returned from ${item.area})`;
-            else if (item.status === 'Retrieved') originText = `(retrieved from ${item.area})`;
-            else originText = `(from ${item.area})`;
-        } else if (item.from) {
-            displayArea = item.area;
-            originText = `(from ${item.from})`;
         }
 
         historyContent.innerHTML += `
@@ -2215,7 +1891,7 @@ window.openModal = (vin, history) => {
                 <div class="absolute -left-[9px] top-0 w-4 h-4 rounded-full ${iconColor} border-2 border-white"></div>
                 <div class="bg-white p-3 rounded border ${colorClass} text-sm">
                     <div class="flex justify-between font-bold">
-                        <span>${displayArea} ${originText ? `<span class="text-xs font-normal text-gray-500 italic ml-1">${originText}</span>` : ''}</span>
+                        <span>${item.area}</span>
                         <span>${icon}</span>
                     </div>
                     <div class="flex justify-between mt-1 text-xs opacity-80">
@@ -2231,7 +1907,6 @@ window.openModal = (vin, history) => {
      document.getElementById('history-modal').classList.add('flex');
 };
 
-// GLOBAL HELPERS attached to window so onClick works
 window.switchView = (v) => {
     const dash = document.getElementById('view-dashboard');
     const track = document.getElementById('view-track');
@@ -2246,23 +1921,17 @@ window.switchView = (v) => {
     navSettings.className = 'hidden pb-3 text-gray-500 hover:text-indigo-600 transition-colors flex items-center'; 
     navAnalytics.className = 'hidden pb-3 text-gray-500 hover:text-indigo-600 transition-colors flex items-center';
     
-    // FIX: Reset Aging tab styling to default before checking visibility
     if(navAging) navAging.className = 'hidden pb-3 text-gray-500 hover:text-indigo-600 transition-colors flex items-center';
 
-   if(['Admin', 'Manager', 'PostWIPManager'].includes(currentUserRole)) {
+    if(['Admin', 'Manager', 'PostWIPManager'].includes(currentUserRole)) {
         if(navAging) navAging.classList.remove('hidden');
     } else {
         if(navAging) navAging.classList.add('hidden');
     }
 
-    // Only Admin can see settings
-    if(currentUserRole === 'Admin') {
-        navSettings.classList.remove('hidden');
-    }
-    
-    // Both Admin and Manager can see analytics
     if(currentUserRole === 'Admin' || currentUserRole === 'Manager') {
-        if(navAnalytics) navAnalytics.classList.remove('hidden');
+        navSettings.classList.remove('hidden');
+        navAnalytics.classList.remove('hidden');
     }
     
     dash.classList.add('hidden');
@@ -2271,7 +1940,7 @@ window.switchView = (v) => {
     analytics.classList.add('hidden');
     if(viewAging) viewAging.classList.add('hidden');
 
-const addCarSection = document.getElementById('add-car-section');
+    const addCarSection = document.getElementById('add-car-section');
 
     if(v==='dashboard'){ 
         dash.classList.remove('hidden'); 
@@ -2346,11 +2015,9 @@ window.renderAgingDashboard = (filter = 'both') => {
     });
 };
 
-
 // --- ANALYTICS ENGINE ---
 let chartInstances = {};
 
-// --- PDF EXPORT LOGIC ---
 window.exportToPDF = async () => {
     const btn = document.getElementById('export-pdf-btn');
     if(!btn) return;
@@ -2361,12 +2028,10 @@ window.exportToPDF = async () => {
 
     try {
         const { jsPDF } = window.jspdf;
-        // 'l' sets orientation to Landscape, 'a4' is the format
         const pdf = new jsPDF('l', 'mm', 'a4');
         const pageWidth = pdf.internal.pageSize.getWidth();
         const pageHeight = pdf.internal.pageSize.getHeight();
         
-        // Find checked boxes
         const checkboxes = document.querySelectorAll('.export-cb:checked');
         if (checkboxes.length === 0) {
             alert("Please select at least one chart to export.");
@@ -2375,50 +2040,39 @@ window.exportToPDF = async () => {
             return;
         }
 
-        // Loop through selected chart containers
         for (let i = 0; i < checkboxes.length; i++) {
             const targetId = checkboxes[i].dataset.target;
             const element = document.getElementById(targetId);
             if (!element) continue;
 
-            // Add a new page for every chart AFTER the first one
-            if (i > 0) {
-                pdf.addPage();
-            }
+            if (i > 0) pdf.addPage();
 
-            // --- FIX: Temporarily replace date inputs with standard divs to prevent html2canvas text clipping ---
             const dateInputs = element.querySelectorAll('input[type="date"]');
             const placeholders = [];
             dateInputs.forEach(input => {
                 const div = document.createElement('div');
                 div.textContent = input.value;
-                div.className = input.className; // Copy existing Tailwind classes
-                // Force flexbox centering to guarantee text isn't cut off vertically
+                div.className = input.className; 
                 div.style.display = 'inline-flex';
                 div.style.alignItems = 'center';
                 div.style.boxSizing = 'border-box';
-                // Match dimensions exactly
                 div.style.width = input.offsetWidth + 'px';
                 div.style.height = input.offsetHeight + 'px';
                 
                 input.parentNode.insertBefore(div, input);
-                input.style.display = 'none'; // Hide the native input
+                input.style.display = 'none'; 
                 placeholders.push({ input, div });
             });
 
-            // Capture HTML as image
             const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#ffffff' });
             const imgData = canvas.toDataURL('image/png');
 
-            // Restore original native date inputs immediately after capture
             placeholders.forEach(({ input, div }) => {
                 input.style.display = '';
                 div.remove();
             });
-            // --------------------------------------------------------------------------------------------------
 
-            // Dimensions and scaling logic to prevent clipping
-            const margin = 10; // 10mm margin on all sides
+            const margin = 10;
             const maxW = pageWidth - (margin * 2);
             const maxH = pageHeight - (margin * 2);
 
@@ -2428,33 +2082,28 @@ window.exportToPDF = async () => {
             let finalW = maxW;
             let finalH = finalW / ratio;
 
-            // If scaling to max width makes it too tall for the page, scale to max height instead
             if (finalH > maxH) {
                 finalH = maxH;
                 finalW = finalH * ratio;
             }
 
-            // Center the image perfectly on the page
             const xOffset = (pageWidth - finalW) / 2;
             const yOffset = (pageHeight - finalH) / 2;
 
             pdf.addImage(imgData, 'PNG', xOffset, yOffset, finalW, finalH);
         }
 
-        // Trigger Download
         pdf.save(`Analytics_Report_${new Date().toISOString().split('T')[0]}.pdf`);
         
     } catch (error) {
         console.error("PDF Export Error:", error);
         alert("An error occurred while generating the PDF. Please try again.");
     } finally {
-        // Reset Button
         btn.innerHTML = originalText;
         btn.disabled = false;
     }
 };
 
-// NEW: Custom Plugin to draw numbers inside stacked bars and totals at the top
 const stackedBarLabelPlugin = {
     id: 'stackedBarLabelPlugin',
     afterDatasetsDraw(chart) {
@@ -2469,7 +2118,7 @@ const stackedBarLabelPlugin = {
             let barX = null;
 
             chart.data.datasets.forEach((dataset, datasetIndex) => {
-                if (dataset.type === 'line') return; // Skip the Max WIP line
+                if (dataset.type === 'line') return; 
                 
                 const meta = chart.getDatasetMeta(datasetIndex);
                 if (meta.hidden) return;
@@ -2480,24 +2129,21 @@ const stackedBarLabelPlugin = {
                     const element = meta.data[i];
                     if (element) {
                         barX = element.x;
-                        const centerY = (element.y + element.base) / 2; // Center of the specific segment
+                        const centerY = (element.y + element.base) / 2; 
                         
-                        // Keep track of the highest point of the bar stack
                         if (topY === null || element.y < topY) {
                             topY = element.y;
                         }
 
-                        // Draw inside segment number
-                        ctx.fillStyle = '#ffffff'; // White text
+                        ctx.fillStyle = '#ffffff'; 
                         ctx.font = 'bold 11px sans-serif';
                         ctx.fillText(val, barX, centerY);
                     }
                 }
             });
 
-            // Draw total at the top of the bar
             if (total > 0 && barX !== null && topY !== null) {
-                ctx.fillStyle = '#374151'; // Dark gray text
+                ctx.fillStyle = '#374151'; 
                 ctx.font = 'bold 14px sans-serif';
                 ctx.fillText(total, barX, topY - 12);
             }
@@ -2505,21 +2151,17 @@ const stackedBarLabelPlugin = {
     }
 };
 
-// NEW: Handle Custom Dropdowns
 window.toggleDropdown = (id, event) => {
     if(event) event.stopPropagation();
     document.getElementById(id).classList.toggle('hidden');
 };
 
-// Close dropdowns if clicking anywhere outside them
 document.addEventListener('click', (e) => {
     if (!e.target.closest('.dropdown-container')) {
-		const d1 = document.getElementById('dropdown-hist-zones');
+        const d1 = document.getElementById('dropdown-hist-zones');
         const d2 = document.getElementById('dropdown-trend-zones');
-        const d3 = document.getElementById('dropdown-aging-models'); // NEW
         if(d1 && !d1.classList.contains('hidden')) d1.classList.add('hidden');
         if(d2 && !d2.classList.contains('hidden')) d2.classList.add('hidden');
-        if(d3 && !d3.classList.contains('hidden')) d3.classList.add('hidden'); // NEW
     }
 });
 
@@ -2527,15 +2169,13 @@ window.renderAnalyticsDashboard = () => {
     if(!allCars || allCars.length === 0) return;
 
     const todayStr = new Date().toISOString().split('T')[0];
-    const d = new Date(); d.setDate(d.getDate() - 14); // 14 days ago
+    const d = new Date(); d.setDate(d.getDate() - 14); 
     const twoWeeksAgoStr = d.toISOString().split('T')[0];
     
-    // Set default dates if empty
     if(!analyticsDailyTpDate.value) analyticsDailyTpDate.value = todayStr;
     if(!analyticsWipDate.value) analyticsWipDate.value = todayStr;
     if(!analyticsPostWipDate.value) analyticsPostWipDate.value = todayStr;
     
-    // Line graph defaults
     if(!analyticsHistEnd.value) analyticsHistEnd.value = todayStr;
     if(!analyticsHistStart.value) analyticsHistStart.value = twoWeeksAgoStr;
     if(!analyticsReworkEnd.value) analyticsReworkEnd.value = todayStr;
@@ -2543,8 +2183,6 @@ window.renderAnalyticsDashboard = () => {
     if(!analyticsTrendEnd.value) analyticsTrendEnd.value = todayStr;
     if(!analyticsTrendStart.value) analyticsTrendStart.value = twoWeeksAgoStr;
     
-    // Populate zone selectors if empty (filter out "Add Car" zones for trend)
-	// Populate dropdown checkboxes if empty
     const histDropdown = document.getElementById('dropdown-hist-zones');
     const trendDropdown = document.getElementById('dropdown-trend-zones');
     
@@ -2569,39 +2207,12 @@ window.renderAnalyticsDashboard = () => {
         });
     }
 
-	// NEW: System Aging Setup
-    const analyticsAgingStart = document.getElementById('analytics-aging-start');
-    const analyticsAgingEnd = document.getElementById('analytics-aging-end');
-    if(analyticsAgingEnd) {
-        if(!analyticsAgingEnd.value) analyticsAgingEnd.value = todayStr;
-        if(!analyticsAgingStart.value) analyticsAgingStart.value = twoWeeksAgoStr;
-
-        const agingModelsDropdown = document.getElementById('dropdown-aging-models');
-        if(agingModelsDropdown && agingModelsDropdown.children.length === 0) {
-            (appConfig.models || []).forEach(m => {
-                agingModelsDropdown.innerHTML += `
-                    <label class="flex items-center px-4 py-2 hover:bg-gray-50 cursor-pointer text-sm text-gray-700">
-                        <input type="checkbox" value="${m}" class="form-checkbox h-4 w-4 text-indigo-600 mr-2 aging-model-cb" checked onchange="renderAgingCharts()">
-                        ${m}
-                    </label>
-                `;
-            });
-            agingModelsDropdown.innerHTML += `
-                <label class="flex items-center px-4 py-2 hover:bg-gray-50 cursor-pointer text-sm text-gray-700">
-                    <input type="checkbox" value="Unknown" class="form-checkbox h-4 w-4 text-indigo-600 mr-2 aging-model-cb" checked onchange="renderAgingCharts()">
-                    Unknown
-                </label>
-            `;
-        }
-    }
-
     renderDailyThroughputChart();
     renderHistoricalThroughputChart();
     renderWipStatusChart();
     renderPostWipStatusChart();
     renderAvgReworkChart();
     renderReworkTrendLineChart();
-	if(analyticsAgingEnd) renderAgingCharts(); // Add this line
 };
 
 const getChartContext = (id) => {
@@ -2610,7 +2221,6 @@ const getChartContext = (id) => {
     return ctx;
 };
 
-// 1. Daily Throughput per Zone (Bar)
 window.renderDailyThroughputChart = () => {
     const targetDateStr = analyticsDailyTpDate.value;
     if(!targetDateStr) return;
@@ -2622,7 +2232,7 @@ window.renderDailyThroughputChart = () => {
         if(car.history) {
             car.history.forEach(h => {
                 if(h.status === 'Finished') {
-                    const dateStr = h.timestamp.toDate ? h.timestamp.toDate().toISOString().split('T')[0] : new Date(h.timestamp).toISOString().split('T')[0];
+                    const dateStr = new Date(h.timestamp).toISOString().split('T')[0];
                     if(dateStr === targetDateStr && counts[h.area] !== undefined) {
                         counts[h.area]++;
                     }
@@ -2646,7 +2256,6 @@ window.renderDailyThroughputChart = () => {
     });
 };
 
-// 2. Historical Throughput (Multi-Line)
 window.renderHistoricalThroughputChart = () => {
     const startStr = analyticsHistStart.value;
     const endStr = analyticsHistEnd.value;
@@ -2679,7 +2288,7 @@ window.renderHistoricalThroughputChart = () => {
         if(car.history) {
             car.history.forEach(h => {
                 if(h.status === 'Finished' && selectedZones.includes(h.area)) {
-                    const dateStr = h.timestamp.toDate ? h.timestamp.toDate().toISOString().split('T')[0] : new Date(h.timestamp).toISOString().split('T')[0];
+                    const dateStr = new Date(h.timestamp).toISOString().split('T')[0];
                     const dateIndex = dates.indexOf(dateStr);
                     if(dateIndex !== -1) {
                         datasetsMap[h.area].data[dateIndex]++;
@@ -2692,14 +2301,13 @@ window.renderHistoricalThroughputChart = () => {
     chartInstances['chart-hist-throughput'] = new Chart(getChartContext('chart-hist-throughput'), {
         type: 'line',
         data: {
-            labels: dates.map(d => d.slice(5)), // MM-DD
+            labels: dates.map(d => d.slice(5)), 
             datasets: Object.values(datasetsMap)
         },
         options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
     });
 };
 
-// 3. WIP Status (Stacked Bar actual, Line max)
 window.renderWipStatusChart = () => {
     const targetDateStr = analyticsWipDate.value;
     if(!targetDateStr) return;
@@ -2716,11 +2324,11 @@ window.renderWipStatusChart = () => {
 
     allCars.forEach(car => {
         if(!car.history) return;
-        const sortedHistory = [...car.history].sort((a,b) => (a.timestamp.toDate ? a.timestamp.toDate() : new Date(a.timestamp)) - (b.timestamp.toDate ? b.timestamp.toDate() : new Date(b.timestamp)));
+        const sortedHistory = [...car.history].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
         let lastStatus = null, lastArea = null;
 
         for(let entry of sortedHistory) {
-            const eDate = entry.timestamp.toDate ? entry.timestamp.toDate() : new Date(entry.timestamp);
+            const eDate = new Date(entry.timestamp);
             if(eDate <= targetDate) {
                 lastStatus = entry.status;
                 lastArea = entry.area;
@@ -2755,19 +2363,18 @@ window.renderWipStatusChart = () => {
     datasets.push({ type: 'bar', label: 'Unknown Model', data: appConfig.areas.map(a => counts[a]['Unknown']), backgroundColor: '#94a3b8' });
 
     chartInstances['chart-wip-status'] = new Chart(getChartContext('chart-wip-status'), {
-        type: 'bar', // Explicitly declare base type
+        type: 'bar', 
         data: { labels: appConfig.areas, datasets: datasets },
         options: { 
             responsive: true, 
             maintainAspectRatio: false, 
-            layout: { padding: { top: 25 } }, // Extra space for the total label
+            layout: { padding: { top: 25 } }, 
             scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } 
         },
-        plugins: [stackedBarLabelPlugin] // INJECT CUSTOM PLUGIN
+        plugins: [stackedBarLabelPlugin] 
     });
 };
 
-// 3.5. Post-WIP Status (Stacked Bar actual, Line max)
 window.renderPostWipStatusChart = () => {
     const targetDateStr = analyticsPostWipDate.value;
     if(!targetDateStr) return;
@@ -2785,11 +2392,11 @@ window.renderPostWipStatusChart = () => {
 
     allCars.forEach(car => {
         if(!car.history) return;
-        const sortedHistory = [...car.history].sort((a,b) => (a.timestamp.toDate ? a.timestamp.toDate() : new Date(a.timestamp)) - (b.timestamp.toDate ? b.timestamp.toDate() : new Date(b.timestamp)));
+        const sortedHistory = [...car.history].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
         let lastStatus = null, lastArea = null;
 
         for(let entry of sortedHistory) {
-            const eDate = entry.timestamp.toDate ? entry.timestamp.toDate() : new Date(entry.timestamp);
+            const eDate = new Date(entry.timestamp);
             if(eDate <= targetDate) {
                 lastStatus = entry.status;
                 lastArea = entry.area;
@@ -2824,20 +2431,18 @@ window.renderPostWipStatusChart = () => {
     datasets.push({ type: 'bar', label: 'Unknown Model', data: zones.map(z => counts[z]['Unknown']), backgroundColor: '#94a3b8' });
 
     chartInstances['chart-post-wip-status'] = new Chart(getChartContext('chart-post-wip-status'), {
-        type: 'bar', // Explicitly declare base type
+        type: 'bar', 
         data: { labels: zones, datasets: datasets },
         options: { 
             responsive: true, 
             maintainAspectRatio: false, 
-            layout: { padding: { top: 25 } }, // Extra space for the total label
+            layout: { padding: { top: 25 } }, 
             scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } 
         },
-        plugins: [stackedBarLabelPlugin] // INJECT CUSTOM PLUGIN
+        plugins: [stackedBarLabelPlugin] 
     });
 };
 
-
-// 4. Average Rework Time (Stacked VA/NVA) - FILTERED
 window.renderAvgReworkChart = () => {
     const startStr = analyticsReworkStart.value;
     const endStr = analyticsReworkEnd.value;
@@ -2848,7 +2453,6 @@ window.renderAvgReworkChart = () => {
     const endDate = new Date(endStr);
     endDate.setHours(23,59,59,999);
 
-    // FILTER: Exclude any zones that have "Add Car" enabled
     const allowedAddZones = appConfig.allowedAddZones || [];
     const filteredAreas = appConfig.areas.filter(a => !allowedAddZones.includes(a));
 
@@ -2862,7 +2466,7 @@ window.renderAvgReworkChart = () => {
             car.history.forEach(h => {
                 if(!filteredAreas.includes(h.area)) return;
 
-                const hDate = h.timestamp.toDate ? h.timestamp.toDate() : new Date(h.timestamp);
+                const hDate = new Date(h.timestamp);
                 
                 if(hDate >= startDate && hDate <= endDate) {
                     if(h.metrics && (h.status === 'Finished' || h.status.includes('Temp') || h.status.includes('WIP'))) {
@@ -2893,7 +2497,6 @@ window.renderAvgReworkChart = () => {
     });
 };
 
-// 5. Rework Time Trends (Line Graph) - TOTAL TIME (VA + NVA)
 window.renderReworkTrendLineChart = () => {
     const startStr = analyticsTrendStart.value;
     const endStr = analyticsTrendEnd.value;
@@ -2927,7 +2530,7 @@ window.renderReworkTrendLineChart = () => {
         if(car.history) {
             car.history.forEach(h => {
                 if(selectedZones.includes(h.area)) {
-                    const hDate = h.timestamp.toDate ? h.timestamp.toDate() : new Date(h.timestamp);
+                    const hDate = new Date(h.timestamp);
                     const dateStr = hDate.toISOString().split('T')[0];
                     const dateIndex = dates.indexOf(dateStr);
                     
@@ -2966,171 +2569,27 @@ window.renderReworkTrendLineChart = () => {
     });
 };
 
-// NEW: Aging / Time in System Charts (With Model Splitting)
-window.renderAgingCharts = () => {
-    const startStr = document.getElementById('analytics-aging-start').value;
-    const endStr = document.getElementById('analytics-aging-end').value;
-    if(!startStr || !endStr) return;
-
-    const selectedModels = Array.from(document.querySelectorAll('.aging-model-cb:checked')).map(cb => cb.value);
-
-    // Build date array for Trend Chart
-    const dates = [];
-    let currDate = new Date(startStr);
-    const endDate = new Date(endStr);
-    while(currDate <= endDate) {
-        dates.push(currDate.toISOString().split('T')[0]);
-        currDate.setDate(currDate.getDate() + 1);
-    }
-
-    // 1. Calculate Active Snapshot (Always aggregated for the selected models)
-    const activeDaysSum = {};
-    const activeCounts = {};
-    appConfig.areas.forEach(a => { activeDaysSum[a] = 0; activeCounts[a] = 0; });
-    (appConfig.postWipZones || []).forEach(z => { activeDaysSum[z] = 0; activeCounts[z] = 0; });
-
-    allCars.forEach(car => {
-        const carModel = car.model || 'Unknown';
-        if (!selectedModels.includes(carModel)) return;
-        
-        if (car.status !== 'Finished') {
-            const aging = getAgingDetails(car);
-            if (activeCounts[car.currentArea] !== undefined) {
-                activeDaysSum[car.currentArea] += aging.days;
-                activeCounts[car.currentArea]++;
-            }
-        }
-    });
-
-    // 2. Calculate Trend Line(s) (Split vs Aggregate)
-    const trendDatasets = [];
-    const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
-
-    if (agingTrendViewMode === 'split') {
-        selectedModels.forEach((model, index) => {
-            const daysSum = dates.map(() => 0);
-            const counts = dates.map(() => 0);
-
-            allCars.forEach(car => {
-                const carModel = car.model || 'Unknown';
-                if (carModel !== model) return;
-                
-                if (car.status === 'Finished') {
-                    const aging = getAgingDetails(car);
-                    const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
-                    const dateStr = finishDate.toISOString().split('T')[0];
-                    const dateIndex = dates.indexOf(dateStr);
-                    if(dateIndex !== -1) {
-                        daysSum[dateIndex] += aging.days;
-                        counts[dateIndex]++;
-                    }
-                }
-            });
-
-            const avgData = daysSum.map((sum, idx) => counts[idx] > 0 ? Math.round(sum / counts[idx]) : 0);
-            // Only draw the line if there is actual data for this model
-            if (avgData.some(val => val > 0)) {
-                trendDatasets.push({
-                    label: `Avg Days (${model})`,
-                    data: avgData,
-                    borderColor: colors[index % colors.length],
-                    backgroundColor: 'transparent',
-                    tension: 0.3
-                });
-            }
-        });
-    } else {
-        const daysSum = dates.map(() => 0);
-        const counts = dates.map(() => 0);
-        
-        allCars.forEach(car => {
-            const carModel = car.model || 'Unknown';
-            if (!selectedModels.includes(carModel)) return;
-            
-            if (car.status === 'Finished') {
-                const aging = getAgingDetails(car);
-                const finishDate = car.lastUpdated.toDate ? car.lastUpdated.toDate() : new Date(car.lastUpdated);
-                const dateStr = finishDate.toISOString().split('T')[0];
-                const dateIndex = dates.indexOf(dateStr);
-                if(dateIndex !== -1) {
-                    daysSum[dateIndex] += aging.days;
-                    counts[dateIndex]++;
-                }
-            }
-        });
-
-        const avgData = daysSum.map((sum, idx) => counts[idx] > 0 ? Math.round(sum / counts[idx]) : 0);
-        trendDatasets.push({
-            label: 'Avg Days in System (Combined)',
-            data: avgData,
-            borderColor: '#10b981',
-            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-            fill: true,
-            tension: 0.3
-        });
-    }
-
-    // Render Chart 1: Trend Line
-    chartInstances['chart-aging-completed-trend'] = new Chart(getChartContext('chart-aging-completed-trend'), {
-        type: 'line',
-        data: { labels: dates.map(d => d.slice(5)), datasets: trendDatasets },
-        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
-    });
-
-    // Render Chart 2: Snapshot Bar
-    const activeAreas = [...appConfig.areas, ...(appConfig.postWipZones || [])];
-    const activeAvg = activeAreas.map(a => activeCounts[a] > 0 ? Math.round(activeDaysSum[a] / activeCounts[a]) : 0);
-
-    chartInstances['chart-aging-active-snapshot'] = new Chart(getChartContext('chart-aging-active-snapshot'), {
-        type: 'bar',
-        data: {
-            labels: activeAreas,
-            datasets: [{
-                label: 'Avg Days in System (Active WIP)',
-                data: activeAvg,
-                backgroundColor: '#3b82f6',
-                borderRadius: 4
-            }]
-        },
-        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
-    });
-};
-
-// Init
+// SQLite App Initialization
 const init = async () => {
     await fetchUKBankHolidays();
-    const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
-    auth = getAuth(app);
-    if (initialAuthToken) try { await signInWithCustomToken(auth, initialAuthToken); } catch { await signInAnonymously(auth); } else await signInAnonymously(auth);
+    
+    try {
+        db = await initDB();
+        document.getElementById('login-status').textContent = "Ready.";
+        
+        // Wait for setup
+        await loadConfiguration();
+        fetchAllCars();
 
-    onAuthStateChanged(auth, u => {
-        if(u) {
-            userId = u.uid;
-            document.getElementById('login-status').textContent = "Ready.";
-            // Load config first
-            loadConfiguration();
-            
-            // Old Scan removed or updated. The button to open modal is now the primary action.
-            document.getElementById('track-vin-input').addEventListener('keypress', e => { if(e.key==='Enter') handleTrackSearch(); });
+        document.getElementById('track-vin-input').addEventListener('keypress', e => { 
+            if(e.key === 'Enter') handleTrackSearch(); 
+        });
 
-            onSnapshot(query(collection(db, COLLECTION_PATH)), (s) => {
-                const docs = []; s.forEach(d => docs.push(d));
-                processSnapshotData(docs);
-            });
-        }
-    });
+    } catch (e) {
+        console.error("Initialization error:", e);
+        document.getElementById('login-status').textContent = "Failed to initialize database.";
+        document.getElementById('login-status').classList.add("text-red-500");
+    }
 };
 	
-
 init();
-
-
-
-
-
-
-
-
-
-
